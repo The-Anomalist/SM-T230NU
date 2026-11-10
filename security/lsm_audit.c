@@ -232,6 +232,10 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 	case LSM_AUDIT_DATA_CAP:
 		audit_log_format(ab, " capability=%d ", a->u.cap);
 		break;
+	case LSM_AUDIT_DATA_IOCTL_OP:
+		audit_log_format(ab, " ioctlcmd=0x%x", a->u.op->cmd);
+		audit_log_d_path(ab, " path=", &a->u.op->path);
+		break;
 	case LSM_AUDIT_DATA_PATH: {
 		struct inode *inode;
 
