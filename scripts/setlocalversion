@@ -145,8 +145,9 @@ fi
 if test -e include/config/auto.conf; then
 	. include/config/auto.conf
 else
-	echo "Error: kernelrelease not valid - run 'make prepare' to update it"
-	exit 1
+	# headers_install can query the release before Kconfig creates auto.conf.
+	# In that case there is no configured local version to append yet.
+	exit 0
 fi
 
 # localversion* files in the build and source directory

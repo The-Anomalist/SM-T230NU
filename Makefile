@@ -548,6 +548,11 @@ $(KCONFIG_CONFIG) include/config/auto.conf.cmd: ;
 # we execute the config step to be sure to catch updated Kconfig files
 include/config/%.conf: $(KCONFIG_CONFIG) include/config/auto.conf.cmd
 	$(Q)$(MAKE) -f $(srctree)/Makefile silentoldconfig
+
+# silentoldconfig writes both files, but older Kbuild does not model the
+# generated header. Keep parallel prepare from compiling before it exists.
+include/generated/autoconf.h: include/config/auto.conf
+	$(Q)test -e $@ || $(MAKE) -f $(srctree)/Makefile silentoldconfig
 else
 # external modules needs include/generated/autoconf.h and include/config/auto.conf
 # but do not care if they are up-to-date. Use auto.conf to trigger the test
@@ -705,8 +710,7 @@ export	INSTALL_PATH ?= /boot
 # makefile but the argument can be passed to make if needed.
 #
 
-#MODLIB	= $(INSTALL_MOD_PATH)/lib/modules/$(KERNELRELEASE)
-MODLIB = $(INSTALL_MOD_PATH)/lib/modules
+MODLIB	= $(INSTALL_MOD_PATH)/lib/modules/$(KERNELRELEASE)
 export MODLIB
 
 #
@@ -821,7 +825,7 @@ PHONY += prepare archprepare prepare0 prepare1 prepare2 prepare3
 prepare3: include/config/kernel.release
 ifneq ($(KBUILD_SRC),)
 	@$(kecho) '  Using $(srctree) as source for kernel'
-	$(Q)if [ -f $(srctree)/.config -o -d $(srctree)/include/config ]; then \
+	$(Q)if [ -f $(srctree)/.config ]; then \
 		echo >&2 "  $(srctree) is not clean, please run 'make mrproper'"; \
 		echo >&2 "  in the '$(srctree)' directory.";\
 		/bin/false; \
@@ -832,7 +836,7 @@ endif
 prepare2: prepare3 outputmakefile asm-generic
 
 prepare1: prepare2 $(version_h) include/generated/utsrelease.h \
-                   include/config/auto.conf
+                   include/config/auto.conf include/generated/autoconf.h
 	$(cmd_crmodverdir)
 
 archprepare: archheaders archscripts prepare1 scripts_basic
@@ -971,16 +975,16 @@ modules_install: _modinst_ _modinst_post
 
 PHONY += _modinst_
 _modinst_:
-#	@rm -rf $(MODLIB)/kernel
-#	@rm -f $(MODLIB)/source
-#	@mkdir -p $(MODLIB)/kernel
-#	@ln -s $(srctree) $(MODLIB)/source
-#	@if [ ! $(objtree) -ef  $(MODLIB)/build ]; then \
-#		rm -f $(MODLIB)/build ; \
-#		ln -s $(objtree) $(MODLIB)/build ; \
-#	fi
-#	@cp -f $(objtree)/modules.order $(MODLIB)/
-#	@cp -f $(objtree)/modules.builtin $(MODLIB)/
+	@rm -rf $(MODLIB)/kernel
+	@rm -f $(MODLIB)/source
+	@mkdir -p $(MODLIB)/kernel
+	@ln -s $(srctree) $(MODLIB)/source
+	@if [ ! $(objtree) -ef  $(MODLIB)/build ]; then \
+		rm -f $(MODLIB)/build ; \
+		ln -s $(objtree) $(MODLIB)/build ; \
+	fi
+	@cp -f $(objtree)/modules.order $(MODLIB)/
+	@cp -f $(objtree)/modules.builtin $(MODLIB)/
 	$(Q)$(MAKE) -f $(srctree)/scripts/Makefile.modinst
 
 # This depmod is only for convenience to give the initial
