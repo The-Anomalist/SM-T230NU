@@ -941,6 +941,7 @@ static int clk_cpu_setrate(struct clk_hw *hw, unsigned long rate,
 {
 	struct cpu_opt *md_new, *md_old;
 	unsigned int index, cpu;
+	unsigned int bridge_index;
 	int ret = 0;
 	static struct cpu_opt *bridge_op;
 	struct clk_core *core = to_clk_core(hw);
@@ -975,8 +976,7 @@ static int clk_cpu_setrate(struct clk_hw *hw, unsigned long rate,
 		(md_new->ap_clk_sel == AP_CLK_SRC_PLL3P)))) {
 		/* 1) op0 as bridge, must from pll1_624 */
 		if (unlikely(!bridge_op))
-			bridge_op = list_first_entry(&core_op_list,\
-			 struct cpu_opt, node);
+			bridge_op = cpu_rate2_op_ptr(312, &bridge_index);
 		BUG_ON(bridge_op->ap_clk_sel != AP_CLK_SRC_PLL1_624);
 		/* 2) use startup op(op0) as a bridge */
 		ret = set_core_freq(hw, md_old, bridge_op);

@@ -528,15 +528,22 @@ static struct mmp_clk_disp dsi1 = {
 */
 static inline void round_max_freq(void)
 {
-	if (!max_freq)
-		max_freq = CORE_1p2G;
+    /*
+     * PXA1088: allow the existing 1248 MHz PLL1 OPP
+     * even when the bootloader requests the 1183 MHz class.
+     */
+    if (cpu_is_pxa1088() && max_freq <= CORE_1p2G)
+        max_freq = CORE_1p25G;
 
-	if (max_freq <= CORE_1p2G)
-		max_freq = CORE_1p2G;
-	else if (max_freq <= CORE_1p25G)
-		max_freq = CORE_1p25G;
-	else
-		max_freq = CORE_1p5G;
+    if (!max_freq)
+        max_freq = CORE_1p2G;
+
+    if (max_freq <= CORE_1p2G)
+        max_freq = CORE_1p2G;
+    else if (max_freq <= CORE_1p25G)
+        max_freq = CORE_1p25G;
+    else
+        max_freq = CORE_1p5G;
 }
 static inline void setup_pll3(void)
 {
@@ -903,10 +910,34 @@ static const char *core_parent[] = {"pll1_624", "pll1_1248", "pll2", "pll2p",
 /* The PP table only list the possible op here */
 static struct cpu_opt pxa1x88_op_array[] = {
 	{
+		.pclk = 156,
+		.pdclk = 78,
+		.baclk = 39,
+		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
+	},
+	{
+		.pclk = 208,
+		.pdclk = 104,
+		.baclk = 52,
+		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
+	},
+	{
 		.pclk = 312,
 		.pdclk = 156,
 		.baclk = 156,
 		.ap_clk_sel = AP_CLK_SRC_PLL1_624,
+	},
+	{
+		.pclk = 416,
+		.pdclk = 208,
+		.baclk = 104,
+		.ap_clk_sel = AP_CLK_SRC_PLL1_1248,
+	},
+	{
+		.pclk = 533,
+		.pdclk = 266,
+		.baclk = 133,
+		.ap_clk_sel = AP_CLK_SRC_PLL2P,
 	},
 	{
 		.pclk = 624,
@@ -954,7 +985,7 @@ struct core_params pxa1x88_core_params = {
 	.cpu_opt_size = ARRAY_SIZE(pxa1x88_op_array),
 	.cpu_rtcwtc_table = cpu_rtcwtc_1x88,
 	.cpu_rtcwtc_table_size = ARRAY_SIZE(cpu_rtcwtc_1x88),
-	.max_cpurate = 1183,
+	.max_cpurate = 1482,
 	.dcstat_support = true,
 	.shared_lock = &pll3_lock,
 };
