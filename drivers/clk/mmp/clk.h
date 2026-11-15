@@ -533,8 +533,10 @@ int register_clk_bind2ddr(struct clk *clk, unsigned long max_freq,
  */
 struct axi_opt {
 	unsigned int aclk;		/* axi clock */
+	unsigned long aclk_rate;	/* exact axi clock rate in Hz */
 	u32 axi_clk_sel;		/* axi src sel val */
 	unsigned int axi_clk_src;	/* axi src rate */
+	unsigned long axi_clk_src_rate; /* exact axi source rate in Hz */
 	struct clk *axi_parent;		/* axi clk parent node */
 	unsigned int aclk_div;		/* axi clk divider */
 };

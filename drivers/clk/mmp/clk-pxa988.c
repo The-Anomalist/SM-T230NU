@@ -526,24 +526,29 @@ static struct mmp_clk_disp dsi1 = {
  * round it to just use platform allowed frequency.
  * For 1x88, it is 1183M or 1482M
 */
+unsigned long pxa1x88_get_max_freq(void)
+{
+	unsigned long freq = max_freq;
+
+	if (cpu_is_pxa1088() && freq <= CORE_1p2G)
+		freq = CORE_1p25G;
+
+	if (!freq)
+		freq = CORE_1p2G;
+
+	if (freq <= CORE_1p2G)
+		freq = CORE_1p2G;
+	else if (freq <= CORE_1p25G)
+		freq = CORE_1p25G;
+	else
+		freq = CORE_1p5G;
+
+	return freq;
+}
+
 static inline void round_max_freq(void)
 {
-    /*
-     * PXA1088: allow the existing 1248 MHz PLL1 OPP
-     * even when the bootloader requests the 1183 MHz class.
-     */
-    if (cpu_is_pxa1088() && max_freq <= CORE_1p2G)
-        max_freq = CORE_1p25G;
-
-    if (!max_freq)
-        max_freq = CORE_1p2G;
-
-    if (max_freq <= CORE_1p2G)
-        max_freq = CORE_1p2G;
-    else if (max_freq <= CORE_1p25G)
-        max_freq = CORE_1p25G;
-    else
-        max_freq = CORE_1p5G;
+	max_freq = pxa1x88_get_max_freq();
 }
 static inline void setup_pll3(void)
 {
@@ -596,7 +601,7 @@ static inline void setup_pll3_vco(void)
 			pr_err("PLL3 VCO value is out of range !\n");
 			BUG_ON(1);
 		}
-		if (!(pll3_vco_default % max_freq))
+		if (!((pll3_vco_default / MHZ_TO_HZ) % max_freq))
 			pll3p_default = max_freq * MHZ_TO_HZ;
 		else /* Core will not use pll3p */
 			pll3p_default = pll3_vco_default;
@@ -1156,6 +1161,7 @@ static struct axi_opt axi266_oparray[] = {
 	},
 	{
 		.aclk = 266,
+		.aclk_rate = 266500000,
 		.axi_clk_sel = 0x3,
 	},
 };
@@ -1171,14 +1177,14 @@ struct ddr_combclk_relation aclk_dclk_relationtbl_1088[] = {
 	{.dclk_rate = 156000000, .combclk_rate = 78000000},
 	{.dclk_rate = 312000000, .combclk_rate = 156000000},
 	{.dclk_rate = 400000000, .combclk_rate = 200000000},
-	{.dclk_rate = 533000000, .combclk_rate = 266000000},
+	{.dclk_rate = 533000000, .combclk_rate = 266500000},
 };
 
 struct ddr_combclk_relation aclk_dclk_relationtbl_1L88[] = {
 	{.dclk_rate = 156000000, .combclk_rate = 156000000},
 	{.dclk_rate = 312000000, .combclk_rate = 156000000},
 	{.dclk_rate = 400000000, .combclk_rate = 200000000},
-	{.dclk_rate = 533000000, .combclk_rate = 266000000},
+	{.dclk_rate = 533000000, .combclk_rate = 266500000},
 };
 
 void __init pxa988_acpu_init(void __iomem *apmu_base, void __iomem *mpmu_base,
@@ -1259,12 +1265,12 @@ void __init pxa988_acpu_init(void __iomem *apmu_base, void __iomem *mpmu_base,
 	clks[axi] = clk;
 	if (cpu_is_pxa1L88())
 		register_clk_bind2ddr(clk, axi_params.axi_opt
-				[axi_params.axi_opt_size - 1].aclk * MHZ_TO_HZ,
+				[axi_params.axi_opt_size - 1].aclk_rate,
 				aclk_dclk_relationtbl_1L88,
 				ARRAY_SIZE(aclk_dclk_relationtbl_1L88));
 	else
 		register_clk_bind2ddr(clk, axi_params.axi_opt
-				[axi_params.axi_opt_size - 1].aclk * MHZ_TO_HZ,
+				[axi_params.axi_opt_size - 1].aclk_rate,
 				aclk_dclk_relationtbl_1088,
 				ARRAY_SIZE(aclk_dclk_relationtbl_1088));
 }

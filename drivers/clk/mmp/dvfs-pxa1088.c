@@ -305,7 +305,7 @@ static int __init setup_pxa1088_dvfs_platinfo(void)
 		pr_err("error to ioremap hwdvc base\n");
 		return -EINVAL;
 	}
-	if (max_freq > CORE_1p2G)
+	if (pxa1x88_get_max_freq() > CORE_1p2G)
 		dvc_pxa1088_info.millivolts = vm_mv_1088_svc_1p25G[uiprofile];
 	else
 		dvc_pxa1088_info.millivolts = vm_mv_1088_svc_1p2G[uiprofile];

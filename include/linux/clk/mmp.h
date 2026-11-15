@@ -12,6 +12,7 @@ enum {
 };
 
 extern unsigned long max_freq;
+unsigned long pxa1x88_get_max_freq(void);
 
 unsigned int get_ddr_op_num(void);
 unsigned int get_ddr_op_rate(unsigned int index);

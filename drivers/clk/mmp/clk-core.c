@@ -663,6 +663,17 @@ static struct cpu_opt *cpu_rate2_op_ptr(unsigned int rate, unsigned int *index)
 	return cop;
 }
 
+static struct cpu_opt *cpu_rate2_op_ptr_exact(unsigned int rate)
+{
+	struct cpu_opt *cop;
+
+	list_for_each_entry(cop, &core_op_list, node)
+		if (cop->pclk == rate)
+			return cop;
+
+	return NULL;
+}
+
 static struct clk *cpu_sel2parent(struct clk_hw *hw, enum ap_clk_sel ap_sel)
 {
 
@@ -826,11 +837,11 @@ static void __init_fc_setting(void *apmu_base)
 static void clk_cpu_init(struct clk_hw *hw)
 {
 	unsigned int op_index;
+	unsigned int *pp;
 	struct clk *parent;
-	int i;
+	int i, ret;
 	struct cpu_opt cur_op, *op, *cop;
 	struct clk_core *core = to_clk_core(hw);
-	unsigned int pp[MAX_OP_NUM];
 
 	pr_info("pclk(src:sel,div)\tl2clk(src,div)\tpdclk(src,div)\tbaclk(src,div)\t");
 	pr_info("periphclk(src,div)\tl1_rtc:l2_rtc\n");
@@ -908,14 +919,22 @@ static void clk_cpu_init(struct clk_hw *hw)
 
 	/* support dc_stat? */
 	if (core->params->dcstat_support) {
-		i = 0;
-		list_for_each_entry(cop, &core_op_list, node) {
-			pp[i] = cop->pclk;
-			i++;
+		pp = kmalloc(sizeof(*pp) * core->params->cpu_opt_size,
+				GFP_KERNEL);
+		if (!pp) {
+			pr_warn("CPU dcstat OPP allocation failed\n");
+		} else {
+			i = 0;
+			list_for_each_entry(cop, &core_op_list, node)
+				pp[i++] = cop->pclk;
+			ret = register_cpu_dcstat(hw->clk, num_possible_cpus(),
+					pp, i, core->params->pxa_powermode);
+			kfree(pp);
+			if (ret)
+				pr_warn("CPU dcstat registration failed: %d\n", ret);
+			else
+				cpu_dcstat_clk = hw->clk;
 		}
-		register_cpu_dcstat(hw->clk, num_possible_cpus(), pp, i,
-			core->params->pxa_powermode);
-		cpu_dcstat_clk = hw->clk;
 	}
 #ifdef CONFIG_CPU_FREQ_TABLE
 	__init_cpufreq_table(hw);
@@ -941,7 +960,6 @@ static int clk_cpu_setrate(struct clk_hw *hw, unsigned long rate,
 {
 	struct cpu_opt *md_new, *md_old;
 	unsigned int index, cpu;
-	unsigned int bridge_index;
 	int ret = 0;
 	static struct cpu_opt *bridge_op;
 	struct clk_core *core = to_clk_core(hw);
@@ -974,11 +992,17 @@ static int clk_cpu_setrate(struct clk_hw *hw, unsigned long rate,
 		(md_new->ap_clk_sel == AP_CLK_SRC_PLL1_1248)) || \
 		((md_old->ap_clk_sel == AP_CLK_SRC_PLL1_1248) && \
 		(md_new->ap_clk_sel == AP_CLK_SRC_PLL3P)))) {
-		/* 1) op0 as bridge, must from pll1_624 */
-		if (unlikely(!bridge_op))
-			bridge_op = cpu_rate2_op_ptr(312, &bridge_index);
-		BUG_ON(bridge_op->ap_clk_sel != AP_CLK_SRC_PLL1_624);
-		/* 2) use startup op(op0) as a bridge */
+		/* 1) 312 MHz as bridge, must be from pll1_624 */
+		if (unlikely(!bridge_op)) {
+			bridge_op = cpu_rate2_op_ptr_exact(312);
+			if (!bridge_op ||
+			    bridge_op->ap_clk_sel != AP_CLK_SRC_PLL1_624) {
+				pr_err("312 MHz PLL1 bridge OPP is unavailable\n");
+				ret = -EINVAL;
+				goto tmpout;
+			}
+		}
+		/* 2) use the validated 312 MHz OPP as a bridge */
 		ret = set_core_freq(hw, md_old, bridge_op);
 		if (ret)
 			goto tmpout;
@@ -997,7 +1021,7 @@ tmpout:
 	cur_cpu_op = md_new;
 	__clk_reparent(hw->clk, md_new->parent);
 
-	if (core->params->dcstat_support) {
+	if (core->params->dcstat_support && cpu_dcstat_clk) {
 		for_each_possible_cpu(cpu)
 			cpu_dcstat_event(cpu_dcstat_clk, cpu, CLK_RATE_CHANGE,
 				index);
@@ -1215,7 +1239,8 @@ static void clk_ddr_init(struct clk_hw *hw)
 	unsigned long op[MAX_OP_NUM];
 	unsigned int ddr_opt_size = 0, i;
 	union dfc_level_reg value;
-	unsigned int op_index, val;
+	unsigned int op_index, val, div;
+	unsigned long parent_rate, target_rate;
 	void __iomem *apmu_base = ddr->params->apmu_base;
 	struct parents_table *parent_table = ddr->params->parent_table;
 	int parent_table_size = ddr->params->parent_table_size;
@@ -1239,10 +1264,16 @@ static void clk_ddr_init(struct clk_hw *hw)
 				cop->ddr_clk_sel);
 		BUG_ON(IS_ERR(parent));
 		cop->ddr_parent = parent;
-		cop->ddr_clk_src =
-			clk_get_rate(parent) / MHZ;
-		cop->dclk_div =
-			cop->ddr_clk_src / (2 * cop->dclk) - 1;
+		parent_rate = clk_get_rate(parent);
+		target_rate = 2 * cop->dclk * MHZ;
+		div = parent_rate / target_rate;
+		if (!div || div > 8 || parent_rate % target_rate) {
+			pr_err("DDR %u MHz has invalid parent rate %lu Hz\n",
+			       cop->dclk, parent_rate);
+			BUG();
+		}
+		cop->ddr_clk_src = parent_rate / MHZ;
+		cop->dclk_div = div - 1;
 
 		pr_info("%d(%d:%d,%d,%d)\n",
 			cop->dclk, cop->ddr_clk_src,
@@ -1416,20 +1447,26 @@ static int set_hwdfc_freq(struct clk_hw *hw, struct ddr_opt *old,
 {
 	unsigned long flags;
 	int ret = 0;
+	struct clk_ddr *ddr = to_clk_ddr(hw);
 
 	pr_debug("DDR set_freq start: old %u, new %u\n",
 		old->dclk, new->dclk);
 
-	clk_prepare_enable(new->ddr_parent);
+	ret = clk_prepare_enable(new->ddr_parent);
+	if (ret)
+		goto out;
+	spin_lock(ddr->lock);
 	local_irq_save(flags);
 	ret = ddr_hwdfc_seq(hw, old, new);
 	if (unlikely(ret == -EAGAIN)) {
 		/* still stay at old freq and src */
 		local_irq_restore(flags);
+		spin_unlock(ddr->lock);
 		clk_disable_unprepare(new->ddr_parent);
 		goto out;
 	}
 	local_irq_restore(flags);
+	spin_unlock(ddr->lock);
 	clk_disable_unprepare(old->ddr_parent);
 
 	pr_debug("DDR set_freq end: old %u, new %u\n",
@@ -1549,20 +1586,25 @@ static int set_ddr_freq(struct clk_hw *hw, struct ddr_opt *old,
 	}
 
 	ddr_old_parent = cop.ddr_parent;
-	clk_prepare_enable(new->ddr_parent);
+	ret = clk_prepare_enable(new->ddr_parent);
+	if (ret)
+		goto out;
 
 	/* Get lock in irq disable status to short AP hold lock time */
+	spin_lock(ddr->lock);
 	local_irq_save(flags);
 	ret = get_fc_lock(apmu_base, 0);
 	if (ret) {
 		put_fc_lock(apmu_base);
 		local_irq_restore(flags);
+		spin_unlock(ddr->lock);
 		clk_disable_unprepare(new->ddr_parent);
 		goto out;
 	}
 	ddr_fc_seq(hw, &cop, new);
 	put_fc_lock(apmu_base);
 	local_irq_restore(flags);
+	spin_unlock(ddr->lock);
 
 	cop = *new;
 	get_cur_ddr_op(hw, &cop);
@@ -1625,7 +1667,7 @@ static int trigger_bind2ddr_clk_rate(unsigned long ddr_rate)
 {
 	struct ddr_combined_clk *comclk;
 	unsigned long tgt, cur;
-	int ret = 0, i = 0;
+	int err, ret = 0, i = 0;
 	list_for_each_entry(comclk, &ddr_combined_clk_list, node) {
 		if (!comclk->relationtbl)
 			continue;
@@ -1639,10 +1681,12 @@ static int trigger_bind2ddr_clk_rate(unsigned long ddr_rate)
 		tgt = min(comclk->relationtbl[i].combclk_rate, comclk->maxrate);
 		pr_debug("%s Start rate change to %lu\n",
 			comclk->clk->name, tgt);
-		ret = clk_set_rate(comclk->clk, tgt);
-		if (ret) {
+		err = clk_set_rate(comclk->clk, tgt);
+		if (err) {
 			pr_info("%s failed to change clk %s rate\n",
 				__func__, comclk->clk->name);
+			if (!ret)
+				ret = err;
 			continue;
 		}
 		cur = clk_get_rate(comclk->clk);
@@ -1650,6 +1694,8 @@ static int trigger_bind2ddr_clk_rate(unsigned long ddr_rate)
 			pr_info("clk %s: cur %lu, tgt %lu\n",
 					comclk->clk->name, cur, tgt);
 			WARN_ON(1);
+			if (!ret)
+				ret = -EIO;
 		}
 	}
 
@@ -1679,7 +1725,7 @@ static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 	unsigned int index;
 	struct ddr_opt *ddr_opt;
 	struct clk_ddr *ddr = to_clk_ddr(hw);
-	int ret = 0;
+	int bind_ret, rollback_ret, ret = 0;
 	ddr_opt = ddr->params->ddr_opt;
 
 	rate /= MHZ;
@@ -1692,7 +1738,6 @@ static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 	mutex_lock(&ddraxi_freqs_mutex);
 	md_old = cur_ddr_op;
 
-	spin_lock(ddr->lock);
 	if (ddr->flags & MMP_DDR_HWDFC_FEAT)
 		ret = set_hwdfc_freq(hw, md_old, md_new);
 	else {
@@ -1701,7 +1746,6 @@ static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 			ddr_lpm_tbl_optimize(ddr,
 				md_old->dclk, md_new->dclk);
 	}
-	spin_unlock(ddr->lock);
 	if (ret) {
 		mutex_unlock(&ddraxi_freqs_mutex);
 		goto out;
@@ -1710,7 +1754,35 @@ static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 
 	mutex_unlock(&ddraxi_freqs_mutex);
 
-	trigger_bind2ddr_clk_rate(rate * MHZ);
+	bind_ret = trigger_bind2ddr_clk_rate(rate * MHZ);
+	if (bind_ret) {
+		mutex_lock(&ddraxi_freqs_mutex);
+		if (cur_ddr_op != md_new)
+			rollback_ret = -EAGAIN;
+		else if (ddr->flags & MMP_DDR_HWDFC_FEAT)
+			rollback_ret = set_hwdfc_freq(hw, md_new, md_old);
+		else
+			rollback_ret = set_ddr_freq(hw, md_new, md_old);
+		if (!rollback_ret) {
+			cur_ddr_op = md_old;
+			if (ddr->flags & MMP_DDR_DLL_BYPASS)
+				ddr_lpm_tbl_optimize(ddr,
+					md_new->dclk, md_old->dclk);
+		}
+		else if (cur_ddr_op)
+			__clk_reparent(hw->clk, cur_ddr_op->ddr_parent);
+		mutex_unlock(&ddraxi_freqs_mutex);
+
+		if (!rollback_ret) {
+			ret = trigger_bind2ddr_clk_rate(md_old->dclk * MHZ);
+			if (ret)
+				pr_err("Failed to restore DDR-bound clocks: %d\n", ret);
+		}
+		else
+			pr_err("DDR rollback failed after bound clock error: %d\n",
+			       rollback_ret);
+		return rollback_ret ? rollback_ret : bind_ret;
+	}
 	__clk_reparent(hw->clk, md_new->ddr_parent);
 	if (ddr->params->dcstat_support)
 		clk_dcstat_event(hw->clk, CLK_RATE_CHANGE, index);
@@ -1872,21 +1944,25 @@ static void get_cur_axi_op(struct clk_hw *hw, struct axi_opt *cop)
 	BUG_ON(!cop->axi_parent);
 
 	if (likely(pllsel.b.axiclksel == cop->axi_clk_sel))
-		cop->axi_clk_src = clk_get_rate(cop->axi_parent) / MHZ;
+		cop->axi_clk_src_rate = clk_get_rate(cop->axi_parent);
 	else {
 		parent = ddr_axi_sel2parent(parent_table, parent_table_size,
 				pllsel.b.axiclksel);
 		cop->axi_parent = parent;
 		cop->axi_clk_sel = pllsel.b.axiclksel;
-		cop->axi_clk_src = clk_get_rate(parent) / MHZ;
+		cop->axi_clk_src_rate = clk_get_rate(parent);
+		cop->axi_clk_src = cop->axi_clk_src_rate / MHZ;
 		pr_err("%s axi clk tsrc:%d csel:%d parent:%s\n",
 			__func__, cop->axi_clk_src,
 			pllsel.b.axiclksel, cop->axi_parent->name);
 	}
-	cop->aclk = cop->axi_clk_src / (dm_cc_ap.b.bus_clk_div + 1);
+	cop->axi_clk_src = cop->axi_clk_src_rate / MHZ;
+	cop->aclk_rate = cop->axi_clk_src_rate /
+		(dm_cc_ap.b.bus_clk_div + 1);
+	cop->aclk = cop->aclk_rate / MHZ;
 }
 
-static unsigned int axi_rate2_op_index(struct clk_hw *hw, unsigned int rate)
+static unsigned int axi_rate2_op_index(struct clk_hw *hw, unsigned long rate)
 {
 	unsigned int index;
 	struct clk_axi *axi = to_clk_axi(hw);
@@ -1895,11 +1971,11 @@ static unsigned int axi_rate2_op_index(struct clk_hw *hw, unsigned int rate)
 	axi_opt = axi->params->axi_opt;
 	axi_opt_size = axi->params->axi_opt_size;
 
-	if (unlikely(rate > axi_opt[axi_opt_size - 1].aclk))
+	if (unlikely(rate > axi_opt[axi_opt_size - 1].aclk_rate))
 		return axi_opt_size  - 1;
 
 	for (index = 0; index < axi_opt_size; index++)
-		if (axi_opt[index].aclk >= rate)
+		if (axi_opt[index].aclk_rate >= rate)
 			break;
 
 	return index;
@@ -1913,7 +1989,8 @@ static void clk_axi_init(struct clk_hw *hw)
 	struct clk_axi *axi = to_clk_axi(hw);
 	struct axi_opt *axi_opt, *cop, cur_op;
 	unsigned int axi_opt_size = 0, i;
-	unsigned int op_index;
+	unsigned int op_index, div;
+	unsigned long parent_rate, target_rate;
 	struct parents_table *parent_table;
 	int parent_table_size;
 
@@ -1938,19 +2015,29 @@ static void clk_axi_init(struct clk_hw *hw)
 			cop->axi_clk_sel);
 		BUG_ON(IS_ERR(parent));
 		cop->axi_parent = parent;
-		cop->axi_clk_src = clk_get_rate(parent) / MHZ;
-		cop->aclk_div = cop->axi_clk_src / cop->aclk - 1;
-		pr_info("%u(%d:%d,%u)\n",
-			cop->aclk, cop->axi_clk_src,
+		parent_rate = clk_get_rate(parent);
+		target_rate = cop->aclk_rate ? cop->aclk_rate : cop->aclk * MHZ;
+		div = parent_rate / target_rate;
+		if (!div || div > 8 || parent_rate % target_rate) {
+			pr_err("AXI %lu Hz has invalid parent rate %lu Hz\n",
+			       target_rate, parent_rate);
+			BUG();
+		}
+		cop->axi_clk_src_rate = parent_rate;
+		cop->axi_clk_src = parent_rate / MHZ;
+		cop->aclk_rate = target_rate;
+		cop->aclk_div = div - 1;
+		pr_info("%lu(%lu:%d,%u)\n",
+			cop->aclk_rate, cop->axi_clk_src_rate,
 			cop->axi_clk_sel, cop->aclk_div);
 	}
 
 	cur_op = axi_opt[0];
 	get_cur_axi_op(hw, &cur_op);
-	op_index = axi_rate2_op_index(hw, cur_op.aclk);
+	op_index = axi_rate2_op_index(hw, cur_op.aclk_rate);
 	cur_axi_op = &axi_opt[op_index];
-	if ((cur_op.axi_clk_src != cur_axi_op->axi_clk_src) ||
-	    (cur_op.aclk != cur_axi_op->aclk))
+	if ((cur_op.axi_clk_src_rate != cur_axi_op->axi_clk_src_rate) ||
+	    (cur_op.aclk_rate != cur_axi_op->aclk_rate))
 		BUG_ON("Boot AXI PP is not supported!");
 
 	/* support dc_stat? */
@@ -1958,11 +2045,11 @@ static void clk_axi_init(struct clk_hw *hw)
 		idx = 0;
 		for (i = 0; i < axi_opt_size; i++) {
 			cop = &axi_opt[i];
-			op[idx++] = cop->aclk * MHZ;
+			op[idx++] = cop->aclk_rate;
 		}
 		clk_register_dcstat(hw->clk, op, idx);
 	}
-	hw->clk->rate = axi_opt[op_index].aclk * MHZ;
+	hw->clk->rate = axi_opt[op_index].aclk_rate;
 	hw->clk->parent = axi_opt[op_index].axi_parent;
 	pr_info(" AXI boot up @%luHZ\n", hw->clk->rate);
 }
@@ -1977,23 +2064,21 @@ static long clk_axi_round_rate(struct clk_hw *hw, unsigned long rate,
 	axi_opt = axi->params->axi_opt;
 	axi_opt_size = axi->params->axi_opt_size;
 
-	rate /= MHZ;
-
-	if (unlikely(rate > axi_opt[axi_opt_size - 1].aclk))
-		return axi_opt[axi_opt_size - 1].aclk * MHZ;
+	if (unlikely(rate > axi_opt[axi_opt_size - 1].aclk_rate))
+		return axi_opt[axi_opt_size - 1].aclk_rate;
 
 	for (index = 0; index < axi_opt_size; index++)
-		if (axi_opt[index].aclk >= rate)
+		if (axi_opt[index].aclk_rate >= rate)
 			break;
 
-	return axi_opt[index].aclk * MHZ;
+	return axi_opt[index].aclk_rate;
 }
 
 static unsigned long clk_axi_recalc_rate(struct clk_hw *hw,
 					unsigned long parent_rate)
 {
 	if (cur_axi_op)
-		return cur_axi_op->aclk * MHZ;
+		return cur_axi_op->aclk_rate;
 	else
 		pr_err("%s: cur_axi_op NULL\n", __func__);
 
@@ -2083,8 +2168,8 @@ static void axi_fc_seq(struct clk_hw *hw, struct axi_opt *cop,
 	cc_ap.v = __raw_readl(APMU_CCR(apmu_base));
 	cc_ap.b.core_allow_spd_chg = 1;
 
-	if ((cop->axi_clk_src != top->axi_clk_src) ||
-	    (cop->aclk != top->aclk)) {
+	if ((cop->axi_clk_src_rate != top->axi_clk_src_rate) ||
+	    (cop->aclk_rate != top->aclk_rate)) {
 		set_axi_clk_sel(hw, top);
 		cc_ap.b.bus_clk_div = top->aclk_div;
 		cc_ap.b.bus_freq_chg_req = 1;
@@ -2116,8 +2201,8 @@ static int set_axi_freq(struct clk_hw *hw, struct axi_opt *old,
 
 	cop = *old;
 	get_cur_axi_op(hw, &cop);
-	if (unlikely((cop.axi_clk_src != old->axi_clk_src) ||
-	   (cop.aclk != old->aclk))) {
+	if (unlikely((cop.axi_clk_src_rate != old->axi_clk_src_rate) ||
+	   (cop.aclk_rate != old->aclk_rate))) {
 		pr_err(" asrc aclk");
 		pr_err("OLD %d %d\n", old->axi_clk_src, old->aclk);
 		pr_err("CUR %d %d\n", cop.axi_clk_src, cop.aclk);
@@ -2126,27 +2211,32 @@ static int set_axi_freq(struct clk_hw *hw, struct axi_opt *old,
 	}
 
 	axi_old_parent = cop.axi_parent;
-	clk_prepare_enable(new->axi_parent);
+	ret = clk_prepare_enable(new->axi_parent);
+	if (ret)
+		goto out;
 
 	/* Get lock in irq disable status to short AP hold lock time */
+	spin_lock(axi->lock);
 	local_irq_save(flags);
 	ret = get_fc_lock(apmu_base, has_hwdfcwr);
 	if (ret) {
 		put_fc_lock(apmu_base);
 		local_irq_restore(flags);
+		spin_unlock(axi->lock);
 		clk_disable_unprepare(new->axi_parent);
 		goto out;
 	}
 	axi_fc_seq(hw, &cop, new);
 	put_fc_lock(apmu_base);
 	local_irq_restore(flags);
+	spin_unlock(axi->lock);
 
 	cop = *new;
 	get_cur_axi_op(hw, &cop);
 
-	if (unlikely((cop.axi_clk_src != new->axi_clk_src) ||
-		(cop.aclk != new->aclk))) {
-		clk_disable(new->axi_parent);
+	if (unlikely((cop.axi_clk_src_rate != new->axi_clk_src_rate) ||
+		(cop.aclk_rate != new->aclk_rate))) {
+		clk_disable_unprepare(new->axi_parent);
 		pr_err("AXI:unsuccessful frequency change!\n");
 		pr_err(" asrc aclk");
 		pr_err("CUR %d %d\n", cop.axi_clk_src, cop.aclk);
@@ -2182,7 +2272,6 @@ static int clk_axi_setrate(struct clk_hw *hw, unsigned long rate,
 	struct axi_opt *op_array =
 		axi->params->axi_opt;
 
-	rate /= MHZ;
 	index = axi_rate2_op_index(hw, rate);
 
 	md_new = &op_array[index];
@@ -2192,9 +2281,7 @@ static int clk_axi_setrate(struct clk_hw *hw, unsigned long rate,
 	mutex_lock(&ddraxi_freqs_mutex);
 	md_old = cur_axi_op;
 
-	spin_lock(axi->lock);
 	ret = set_axi_freq(hw, md_old, md_new);
-	spin_unlock(axi->lock);
 	if (ret)
 		goto out;
 

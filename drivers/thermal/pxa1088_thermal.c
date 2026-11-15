@@ -396,8 +396,69 @@ static int pxa_get_crit_temp(struct thermal_zone_device *thermal,
 	return ret;
 }
 
+static bool pxa_is_cpu_cooling_device(struct thermal_cooling_device *cdev)
+{
+	int i;
+
+	for (i = 0; i < th_zone->cool_dev_size; i++)
+		if (cdev == th_zone->cool_dev[i])
+			return true;
+
+	return false;
+}
+
+static int pxa_bind(struct thermal_zone_device *thermal,
+			struct thermal_cooling_device *cdev)
+{
+	unsigned long max_state, state;
+	int i, ret;
+
+	if (!pxa_is_cpu_cooling_device(cdev))
+		return 0;
+
+	ret = cdev->ops->get_max_state(cdev, &max_state);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < TRIP_POINTS_ACTIVE_NUM; i++) {
+		state = min_t(unsigned long, i + 1, max_state);
+		ret = thermal_zone_bind_cooling_device(thermal, i, cdev,
+					state, 0);
+		if (ret)
+			goto err_unbind;
+	}
+
+	th_zone->bind = true;
+	return 0;
+
+err_unbind:
+	while (--i >= 0)
+		thermal_zone_unbind_cooling_device(thermal, i, cdev);
+	return ret;
+}
+
+static int pxa_unbind(struct thermal_zone_device *thermal,
+			  struct thermal_cooling_device *cdev)
+{
+	int i, ret, result = 0;
+
+	if (!pxa_is_cpu_cooling_device(cdev))
+		return 0;
+
+	for (i = 0; i < TRIP_POINTS_ACTIVE_NUM; i++) {
+		ret = thermal_zone_unbind_cooling_device(thermal, i, cdev);
+		if (ret)
+			result = ret;
+	}
+
+	th_zone->bind = false;
+	return result;
+}
+
 /* Operation callback functions for thermal zone */
 static struct thermal_zone_device_ops const pxa_dev_ops = {
+	.bind = pxa_bind,
+	.unbind = pxa_unbind,
 	.get_temp = pxa_get_temp,
 	.get_mode = pxa_get_mode,
 	.set_mode = pxa_set_mode,
@@ -419,7 +480,7 @@ static void pxa_unregister_thermal(void)
 	if (!th_zone)
 		return;
 
-	if (th_zone->therm_dev)
+	if (!IS_ERR_OR_NULL(th_zone->therm_dev))
 		thermal_zone_device_unregister(th_zone->therm_dev);
 
 	for (i = 0; i < th_zone->cool_dev_size; i++) {
@@ -428,6 +489,7 @@ static void pxa_unregister_thermal(void)
 	}
 
 	kfree(th_zone);
+	th_zone = NULL;
 	pr_info("Pxa: Kernel Thermal management unregistered\n");
 }
 
@@ -448,6 +510,7 @@ static int pxa_register_thermal(struct thermal_sensor_conf *sensor_conf)
 		return -ENOMEM;
 
 	th_zone->sensor_conf = sensor_conf;
+	cpumask_clear(&mask_val);
 	cpumask_set_cpu(0, &mask_val);
 	th_zone->cool_dev[0] = cpufreq_cooling_register(&mask_val);
 	if (IS_ERR(th_zone->cool_dev[0])) {

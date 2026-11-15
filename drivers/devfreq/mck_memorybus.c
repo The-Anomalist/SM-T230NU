@@ -397,6 +397,7 @@ static int ddr_get_dev_status(struct device *dev,
 static int ddr_set_rate(struct ddr_devfreq_data *data, unsigned long tgt_rate)
 {
 	unsigned long cur_freq, tgt_freq;
+	int ret;
 
 	cur_freq = clk_get_rate(data->ddr_clk);
 	tgt_freq = tgt_rate * KHZ_TO_HZ;
@@ -412,13 +413,13 @@ static int ddr_set_rate(struct ddr_devfreq_data *data, unsigned long tgt_rate)
 		update_ddr_performance_data(data);
 
 	/* clk_set_rate will find a frequency larger or equal tgt_freq */
-	clk_set_rate(data->ddr_clk, tgt_freq);
+	ret = clk_set_rate(data->ddr_clk, tgt_freq);
 
 	/* re-init ddr performance counters after ddr clock change */
 	if (data->is_ddr_stats_working)
 		reset_ddr_counters(data);
 
-	return 0;
+	return ret;
 }
 
 static void find_best_freq(struct ddr_devfreq_data *data, unsigned long *freq,
