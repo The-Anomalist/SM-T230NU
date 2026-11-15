@@ -114,6 +114,12 @@ struct _pulseEater_frequency_table TwoDCoreFreq_table[] =
             .frequency = 416000,
           },
     [3] = {
+            .index     = 3,
+            .hwPeriod  = 0xF,
+            .swPeriod  = 12,
+            .frequency = 624000,
+          },
+    [4] = {
             .index     = 4,
             .hwPeriod  = 0,
             .swPeriod  = 0,
@@ -8209,8 +8215,6 @@ OnError:
     gcmkFOOTER();
     return status;
 }
-
-
 
 
 

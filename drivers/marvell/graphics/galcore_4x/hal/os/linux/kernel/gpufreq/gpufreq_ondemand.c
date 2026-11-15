@@ -26,7 +26,6 @@
 #define MAX_FREQUENCY_UP_THRESHOLD          (100)
 #define MAX_RETRY_FREQUENCY_DOWN            (3)
 
-#define DEF_DESIRED_HIGH_FREQ               (HZ_TO_KHZ(312000000))
 #define USE_POLICY_POWER_BENCH              (1)
 
 static int gpufreq_governor_ondemand(struct gpufreq_policy *policy,
@@ -52,11 +51,11 @@ struct gpufreq_ondemand_info_s {
     struct delayed_work     work;
     struct mutex            timer_mutex;
     int                     ref;
+    unsigned int            down_skip;
 };
 
 static struct gpufreq_ondemand_info_s ondemand_info_s[GPUFREQ_GPU_NUMS];
 static unsigned int min_sampling_rate;
-static unsigned int desired_high_freq;
 
 static atomic_t ondemand_enable[GPUFREQ_GPU_NUMS] = {ATOMIC_INIT(0)};
 
@@ -204,7 +203,6 @@ static void gov_policy_gpubench(struct gpufreq_ondemand_info_s *ondemand_info)
     unsigned int gpu = ondemand_info->gpu;
     struct gpufreq_policy * cur_policy = ondemand_info->cur_policy;
     struct ondemand_tuners *ondem_tuners_ins = &ondemand_tuners_ins[gpu];
-    static unsigned int times = 0;
 
     load = gpufreq_get_gpu_load(gpu, ondem_tuners_ins->sampling_rate);
     debug_log(GPUFREQ_LOG_DEBUG, "load %d gpu(%d)\n", load, gpu);
@@ -220,10 +218,8 @@ static void gov_policy_gpubench(struct gpufreq_ondemand_info_s *ondemand_info)
      * check for frequency INCREASE
      **************************************/
     /*
-     * The reasonable way to increase frequency is not to make it jump
-     * to max speed, but to a desired middle level rate. If the work
-     * load which is still higher than up_threshold in the consective
-     * sampling point should trigger up_to_max policy.
+     * A saturated GPU should reach the policy maximum immediately. QoS
+     * limits remain authoritative through __gpufreq_driver_target().
      */
     if(load >= ondem_tuners_ins->up_threshold)
     {
@@ -235,12 +231,7 @@ static void gov_policy_gpubench(struct gpufreq_ondemand_info_s *ondemand_info)
 
         if(ondemand_info->ref == 0)
         {
-            if(cur_policy->cur == cur_policy->min)
-            {
-                new_freq = desired_high_freq;
-                relation = GPUFREQ_RELATION_L;
-            }
-            else
+            if(cur_policy->cur != cur_policy->min)
             {
                 /* aggressive policy, jump to high frequency */
                 new_freq = cur_policy->max * load / 100;
@@ -249,6 +240,7 @@ static void gov_policy_gpubench(struct gpufreq_ondemand_info_s *ondemand_info)
         }
 
         ondemand_info->ref++;
+        ondemand_info->down_skip = 0;
         __gpufreq_driver_target(cur_policy, new_freq, relation);
         return;
     }
@@ -267,10 +259,10 @@ static void gov_policy_gpubench(struct gpufreq_ondemand_info_s *ondemand_info)
     */
     if(cur_policy->cur == cur_policy->max &&
        load < ondem_tuners_ins->lowest_work_load &&
-       times++ < MAX_RETRY_FREQUENCY_DOWN)
+       ondemand_info->down_skip++ < MAX_RETRY_FREQUENCY_DOWN)
            return;
 
-    times = 0;
+    ondemand_info->down_skip = 0;
     /*
      * The optimal frequency is the frequency that is the lowest that
      * can support the current GPU usage without triggering the up
@@ -425,6 +417,7 @@ static int gpufreq_governor_ondemand(struct gpufreq_policy *policy,
         }
 
         this_gov_info->ref = 0;
+        this_gov_info->down_skip = 0;
 
         mutex_init(&this_gov_info->timer_mutex);
         /* create governor timer to check gpu */
@@ -485,7 +478,6 @@ static int gpufreq_gov_ondemand_init(void)
     int err, gpu;
 
     min_sampling_rate = DEF_MIN_SAMPLING_RATE; /* Milliseconds */
-    desired_high_freq = DEF_DESIRED_HIGH_FREQ;
 
     err = gpufreq_register_governor(&gpufreq_gov_ondemand);
     if(err)
