@@ -16,6 +16,7 @@
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/device.h>
+#include <linux/devfreq.h>
 #include <linux/slab.h>
 
 unsigned int log_level = GPUFREQ_LOG_DEFAULT;
@@ -369,6 +370,117 @@ no_policy:
     return ret;
 }
 
+static struct gpufreq_freq_attr *gpufreq_compat_attr(const char *name)
+{
+    struct gpufreq_freq_attr **attr;
+
+    if (!strcmp(name, "cur_freq"))
+        return &scaling_cur_freq;
+    if (!strcmp(name, "min_freq"))
+        return &scaling_min_freq;
+    if (!strcmp(name, "max_freq"))
+        return &scaling_max_freq;
+    if (!strcmp(name, "governor"))
+        return &scaling_governor;
+    if (!strcmp(name, "available_governors"))
+        return &scaling_available_governors;
+    if (strcmp(name, "available_frequencies"))
+        return NULL;
+
+    attr = gpufreq_driver->attr;
+    while (attr && *attr) {
+        if (!strcmp((*attr)->attr.name, "scaling_available_frequencies"))
+            return *attr;
+        attr++;
+    }
+
+    return NULL;
+}
+
+static ssize_t gpufreq_compat_show(struct device *dev,
+                                  struct device_attribute *dev_attr, char *buf)
+{
+    struct gpufreq_policy *base = dev_get_drvdata(dev);
+    struct gpufreq_policy *policy;
+    struct gpufreq_freq_attr *attr;
+    ssize_t ret = -EINVAL;
+
+    attr = gpufreq_compat_attr(dev_attr->attr.name);
+    if (!base || !attr || !attr->show)
+        return ret;
+
+    policy = gpufreq_policy_get(base->gpu);
+    if (!policy)
+        return ret;
+
+    lock_policy_rwsem_read(policy->gpu);
+    ret = attr->show(policy, buf);
+    unlock_policy_rwsem_read(policy->gpu);
+    gpufreq_policy_put(policy);
+
+    return ret;
+}
+
+static ssize_t gpufreq_compat_store(struct device *dev,
+                                   struct device_attribute *dev_attr,
+                                   const char *buf, size_t count)
+{
+    struct gpufreq_policy *base = dev_get_drvdata(dev);
+    struct gpufreq_policy *policy;
+    struct gpufreq_freq_attr *attr;
+    ssize_t ret = -EINVAL;
+
+    attr = gpufreq_compat_attr(dev_attr->attr.name);
+    if (!base || !attr || !attr->store)
+        return ret;
+
+    policy = gpufreq_policy_get(base->gpu);
+    if (!policy)
+        return ret;
+
+    lock_policy_rwsem_write(policy->gpu);
+    ret = attr->store(policy, buf, count);
+    unlock_policy_rwsem_write(policy->gpu);
+    gpufreq_policy_put(policy);
+
+    return ret;
+}
+
+static struct device_attribute gpufreq_compat_attrs[] = {
+    __ATTR(cur_freq, 0444, gpufreq_compat_show, NULL),
+    __ATTR(min_freq, 0644, gpufreq_compat_show, gpufreq_compat_store),
+    __ATTR(max_freq, 0644, gpufreq_compat_show, gpufreq_compat_store),
+    __ATTR(governor, 0644, gpufreq_compat_show, gpufreq_compat_store),
+    __ATTR(available_governors, 0444, gpufreq_compat_show, NULL),
+    __ATTR(available_frequencies, 0444, gpufreq_compat_show, NULL),
+    { },
+};
+
+static void gpufreq_add_compat_interface(struct gpufreq_policy *policy)
+{
+    struct device_attribute *attr;
+    char name[GPUFREQ_NAME_LEN];
+    int ret;
+
+    snprintf(name, sizeof(name), "gpu%u", policy->gpu);
+    policy->compat_dev = devfreq_create_compat_device(name, policy);
+    if (IS_ERR_OR_NULL(policy->compat_dev)) {
+        policy->compat_dev = NULL;
+        return;
+    }
+
+    for (attr = gpufreq_compat_attrs; attr->attr.name; attr++) {
+        ret = device_create_file(policy->compat_dev, attr);
+        if (ret) {
+            devfreq_remove_compat_device(policy->compat_dev);
+            policy->compat_dev = NULL;
+            return;
+        }
+    }
+
+    kobject_uevent(&policy->compat_dev->kobj, KOBJ_CHANGE);
+}
+
 static void gpufreq_sysfs_release(struct kobject *kobj)
 {
     struct gpufreq_policy *policy = to_policy(kobj);
@@ -455,6 +567,10 @@ static int _gpufreq_add_dev_interface(unsigned int gpu,
     if(ret)
     {
         debug_log(GPUFREQ_LOG_WARNING, "failed in setting policy.\n");
+    }
+    else
+    {
+        gpufreq_add_compat_interface(policy);
     }
     return ret;
 
@@ -550,6 +666,8 @@ static int gpufreq_remove_dev(struct gcsDEVOBJECT *pDevObj)
         _gpufreq_governor_notifier(data, GPUFREQ_GOV_EVENT_STOP);
 
     /* remove all sysfs links. */
+    devfreq_remove_compat_device(data->compat_dev);
+    data->compat_dev = NULL;
     kobject_put(&data->kobj);
     wait_for_completion(&data->kobj_unregister);
 

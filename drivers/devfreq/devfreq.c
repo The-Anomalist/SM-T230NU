@@ -36,6 +36,23 @@ static struct class *devfreq_class;
  * monitoring mechanism.
  */
 static struct workqueue_struct *devfreq_wq;
+static void devfreq_create_files(struct device *dev);
+
+struct device *devfreq_create_compat_device(const char *name, void *data)
+{
+	if (!devfreq_class)
+		return ERR_PTR(-ENODEV);
+
+	return device_create(devfreq_class, NULL, 0, data, "%s", name);
+}
+EXPORT_SYMBOL_GPL(devfreq_create_compat_device);
+
+void devfreq_remove_compat_device(struct device *dev)
+{
+	if (!IS_ERR_OR_NULL(dev))
+		device_unregister(dev);
+}
+EXPORT_SYMBOL_GPL(devfreq_remove_compat_device);
 
 /* The list of all device-devfreq governors */
 static LIST_HEAD(devfreq_governor_list);
@@ -626,6 +643,7 @@ struct devfreq *devfreq_add_device(struct device *dev,
 		mutex_unlock(&devfreq->lock);
 		goto err_qos_add;
 	}
+	devfreq_create_files(&devfreq->dev);
 
 	mutex_unlock(&devfreq->lock);
 
@@ -1146,6 +1164,19 @@ static struct device_attribute devfreq_attrs[] = {
 	{ },
 };
 
+static void devfreq_create_files(struct device *dev)
+{
+	struct device_attribute *attr;
+	int err;
+
+	for (attr = devfreq_attrs; attr->attr.name; attr++) {
+		err = device_create_file(dev, attr);
+		if (err)
+			dev_warn(dev, "failed to create %s: %d\n",
+				 attr->attr.name, err);
+	}
+}
+
 static int __init devfreq_init(void)
 {
 	devfreq_class = class_create(THIS_MODULE, "devfreq");
@@ -1160,8 +1191,6 @@ static int __init devfreq_init(void)
 		pr_err("%s: couldn't create workqueue\n", __FILE__);
 		return PTR_ERR(devfreq_wq);
 	}
-	devfreq_class->dev_attrs = devfreq_attrs;
-
 	return 0;
 }
 subsys_initcall(devfreq_init);

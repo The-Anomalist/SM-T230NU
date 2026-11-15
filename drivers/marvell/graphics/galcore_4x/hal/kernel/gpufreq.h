@@ -141,6 +141,7 @@ struct gpufreq_policy {
     /* to sync sysfs creation/deletion */
     struct kobject      kobj;
     struct completion   kobj_unregister;
+	struct device       *compat_dev;
 };
 
 int gpufreq_early_init(void);

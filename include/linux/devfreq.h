@@ -237,6 +237,9 @@ struct devfreq_frequency_table *devfreq_frequency_get_table(
 		unsigned int dev_id);
 
 #if defined(CONFIG_PM_DEVFREQ)
+extern struct device *devfreq_create_compat_device(const char *name,
+							    void *data);
+extern void devfreq_remove_compat_device(struct device *dev);
 extern struct devfreq *devfreq_add_device(struct device *dev,
 				  struct devfreq_dev_profile *profile,
 				  const char *governor_name,
@@ -289,6 +292,16 @@ struct devfreq_throughput_data {
 #endif
 
 #else /* !CONFIG_PM_DEVFREQ */
+static inline struct device *devfreq_create_compat_device(const char *name,
+							   void *data)
+{
+	return NULL;
+}
+
+static inline void devfreq_remove_compat_device(struct device *dev)
+{
+}
+
 static inline struct devfreq *devfreq_add_device(struct device *dev,
 					  struct devfreq_dev_profile *profile,
 					  const char *governor_name,
