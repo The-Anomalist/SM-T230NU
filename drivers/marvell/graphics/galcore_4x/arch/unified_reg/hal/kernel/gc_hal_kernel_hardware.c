@@ -4693,6 +4693,16 @@ gckHARDWARE_SetPowerManagementState(
     gctBOOL commitEntered = gcvFALSE;
     gctBOOL commandStarted = gcvFALSE;
     gctBOOL isrStarted = gcvFALSE;
+#if MRVL_CONFIG_ENABLE_GPUFREQ
+    gctBOOL gpuFreqOffNotified = gcvFALSE;
+#if MRVL_CONFIG_SHADER_CLK_CONTROL
+    gctBOOL shaderFreqOffNotified = gcvFALSE;
+#endif
+#endif
+#if MRVL_PULSE_EATER_COUNT_NUM
+    gctBOOL pulseEaterLocked = gcvFALSE;
+    gctBOOL pulseEaterTimerStopped = gcvFALSE;
+#endif
 
 #if gcdENABLE_KERNEL_PROFILING
     gctUINT64 time, freq, mutexTime, ntfoffTime, onTime, stallTime, acqTime, stopTime,
@@ -4996,14 +5006,17 @@ gckHARDWARE_SetPowerManagementState(
         gcmkONERROR(
             gckOS_StopTimer(Hardware->os,
             Hardware->pulseEaterTimer));
+        pulseEaterTimerStopped = gcvTRUE;
     }
 
 #endif
 
 #if MRVL_CONFIG_ENABLE_GPUFREQ
     /* suspend GPUFreq governor. */
-    if((flag & gcvPOWER_FLAG_POWER_OFF) && has_feat_gpufreq())
+    if((flag & gcvPOWER_FLAG_CLOCK_OFF) && Hardware->clockState &&
+       has_feat_gpufreq())
     {
+        gpuFreqOffNotified = gcvTRUE;
         gcmkONERROR(gckOS_GPUFreqNotifierCallChain(
                         os,
                         GPUFREQ_GPU_EVENT_POWER_OFF,
@@ -5012,6 +5025,7 @@ gckHARDWARE_SetPowerManagementState(
 #if MRVL_CONFIG_SHADER_CLK_CONTROL
         if(has_feat_gc_shader() && Hardware->core == gcvCORE_MAJOR)
         {
+            shaderFreqOffNotified = gcvTRUE;
             gcmkONERROR(gckOS_GPUFreqNotifierCallChain(
                             os,
                             GPUFREQ_GPU_EVENT_POWER_OFF,
@@ -5328,6 +5342,16 @@ gckHARDWARE_SetPowerManagementState(
 
     if (flag & (gcvPOWER_FLAG_POWER_OFF | gcvPOWER_FLAG_CLOCK_OFF))
     {
+#if MRVL_PULSE_EATER_COUNT_NUM
+        if(has_feat_pulse_eater_profiler() &&
+           Hardware->core == gcvCORE_MAJOR)
+        {
+            gcmkONERROR(gckOS_AcquireMutex(os,
+                                           Hardware->pulseEaterMutex,
+                                           gcvINFINITE));
+            pulseEaterLocked = gcvTRUE;
+        }
+#endif
         if(!gckENTRYQUEUE_Qurey(Hardware->kernel->eventObj, &Hardware->kernel->command ->queue))
         {
             gcmkONERROR(gckOS_AtomSet(os, Hardware->IsrClkoff, 0));
@@ -5372,8 +5396,15 @@ gckHARDWARE_SetPowerManagementState(
             Hardware->clockState = (flag & gcvPOWER_FLAG_CLOCK_OFF) ? gcvFALSE
                                                                     : gcvTRUE;
             Hardware->powerState = (flag & gcvPOWER_FLAG_POWER_OFF) ? gcvFALSE
-                                                                    : gcvTRUE;
+                                                                     : gcvTRUE;
         }
+#if MRVL_PULSE_EATER_COUNT_NUM
+        if(pulseEaterLocked)
+        {
+            gcmkONERROR(gckOS_ReleaseMutex(os, Hardware->pulseEaterMutex));
+            pulseEaterLocked = gcvFALSE;
+        }
+#endif
     }
 
     /* Get time until off. */
@@ -5420,7 +5451,10 @@ gckHARDWARE_SetPowerManagementState(
 
 #if MRVL_CONFIG_ENABLE_GPUFREQ
     /* resume GPUFreq governor. */
-    if((flag & gcvPOWER_FLAG_INITIALIZE) && has_feat_gpufreq())
+    if(((flag & gcvPOWER_FLAG_CLOCK_ON) ||
+        ((flag & gcvPOWER_FLAG_INITIALIZE) &&
+         !(flag & gcvPOWER_FLAG_CLOCK_OFF))) &&
+       has_feat_gpufreq())
     {
         gcmkONERROR(gckOS_GPUFreqNotifierCallChain(
                         os,
@@ -5535,6 +5569,41 @@ gckHARDWARE_SetPowerManagementState(
     return gcvSTATUS_OK;
 
 OnError:
+#if MRVL_PULSE_EATER_COUNT_NUM
+    if (pulseEaterLocked)
+    {
+        gcmkVERIFY_OK(gckOS_ReleaseMutex(os, Hardware->pulseEaterMutex));
+    }
+    if (pulseEaterTimerStopped && Hardware->clockState)
+    {
+        gcmkVERIFY_OK(gckOS_StartTimer(Hardware->os,
+                                       Hardware->pulseEaterTimer,
+                                       Hardware->sfPeriod));
+    }
+#endif
+
+#if MRVL_CONFIG_ENABLE_GPUFREQ
+    if (Hardware->clockState)
+    {
+#if MRVL_CONFIG_SHADER_CLK_CONTROL
+        if (shaderFreqOffNotified)
+        {
+            gcmkVERIFY_OK(gckOS_GPUFreqNotifierCallChain(
+                            os,
+                            GPUFREQ_GPU_EVENT_POWER_ON,
+                            (gctPOINTER) &Hardware->devShObj));
+        }
+#endif
+        if (gpuFreqOffNotified)
+        {
+            gcmkVERIFY_OK(gckOS_GPUFreqNotifierCallChain(
+                            os,
+                            GPUFREQ_GPU_EVENT_POWER_ON,
+                            (gctPOINTER) &Hardware->devObj));
+        }
+    }
+#endif
+
     if (commandStarted)
     {
         gcmkVERIFY_OK(gckCOMMAND_Stop(command, gcvFALSE));
@@ -8215,6 +8284,3 @@ OnError:
     gcmkFOOTER();
     return status;
 }
-
-
-

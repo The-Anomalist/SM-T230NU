@@ -852,8 +852,8 @@ static int pulseEater_notifier_call (struct notifier_block *nb,
     int ret = NOTIFY_DONE;
 
     if(!freqs ||
-        /*GC320 not support*/
-        freqs->gpu == gcvCORE_2D)
+        /* 2D has no counter; shader shares the major core period register. */
+        freqs->gpu == gcvCORE_2D || freqs->gpu == gcvCORE_SH)
     {
         return ret;
     }
@@ -1330,6 +1330,13 @@ int gpufreq_get_gpu_load(unsigned int gpu, unsigned int t)
     {
         debug_log(GPUFREQ_LOG_ERROR, "error: get idle profile failed\n");
         return -EINVAL;
+    }
+
+    if(!interval || idle > interval)
+    {
+        debug_log(GPUFREQ_LOG_WARNING,
+            "invalid idle profile: interval %u, idle %u\n", interval, idle);
+        return -EAGAIN;
     }
 
     load = (100 * (interval - idle))/interval;

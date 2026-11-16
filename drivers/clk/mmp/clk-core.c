@@ -211,6 +211,8 @@ static DEFINE_MUTEX(ddraxi_freqs_mutex);
 static int fc_lock_ref_cnt;
 static struct cpu_opt *cur_cpu_op;
 static struct ddr_opt *cur_ddr_op;
+static struct clk *hwdfc_retained_parents[MAX_OP_NUM];
+static unsigned int hwdfc_retained_parent_count;
 static struct axi_opt *cur_axi_op;
 
 struct clk *cpu_dcstat_clk;
@@ -1229,7 +1231,10 @@ static void ddr_lpm_tbl_update(struct clk_ddr *ddr, int bypass)
 	}
 }
 
-static int __ddr_hwdfc_seq(struct clk_hw *hw, unsigned int level);
+static int __ddr_hwdfc_seq(struct clk_hw *hw, unsigned int old_level,
+			   unsigned int level);
+static struct ddr_opt *ddr_level2op(struct clk_ddr *ddr,
+				    unsigned int level);
 static void clk_ddr_init(struct clk_hw *hw)
 {
 	struct clk *parent, *clk;
@@ -1240,6 +1245,8 @@ static void clk_ddr_init(struct clk_hw *hw)
 	unsigned int ddr_opt_size = 0, i;
 	union dfc_level_reg value;
 	unsigned int op_index, val, div;
+	int ret;
+	union dfc_status status;
 	unsigned long parent_rate, target_rate;
 	void __iomem *apmu_base = ddr->params->apmu_base;
 	struct parents_table *parent_table = ddr->params->parent_table;
@@ -1305,8 +1312,22 @@ static void clk_ddr_init(struct clk_hw *hw)
 		 * get the correct DFL by first change it to 0, then change
 		 * it to current DFL
 		 */
-		__ddr_hwdfc_seq(hw, 0);
-		__ddr_hwdfc_seq(hw, op_index);
+		ret = __ddr_hwdfc_seq(hw, 0, ddr_opt[0].ddr_freq_level);
+		if (!ret)
+			ret = __ddr_hwdfc_seq(hw, ddr_opt[0].ddr_freq_level,
+					      cur_ddr_op->ddr_freq_level);
+		if (ret) {
+			pr_err("Failed to initialize DDR HWDFC level: %d\n", ret);
+			status.v = __raw_readl(DFC_STATUS(apmu_base));
+			if (!status.b.dfc_status) {
+				cop = ddr_level2op(ddr, status.b.cfl);
+				if (cop) {
+					cur_ddr_op = cop;
+					op_index = cop - ddr_opt;
+					__clk_reparent(hw->clk, cop->ddr_parent);
+				}
+			}
+		}
 		/*
 		 * Fill dvc level in DFC_LEVEL, this will not trigger dvc
 		 * Level change since default level is 0 for all DFC_LEVEL regs
@@ -1379,7 +1400,8 @@ static long clk_ddr_round_rate(struct clk_hw *hw, unsigned long rate,
 	return ddr_opt[index].dclk * MHZ;
 }
 
-static int __ddr_hwdfc_seq(struct clk_hw *hw, unsigned int level)
+static int __ddr_hwdfc_seq(struct clk_hw *hw, unsigned int old_level,
+			   unsigned int level)
 {
 	union dfc_ap dfc_ap;
 	union dfc_status status;
@@ -1400,7 +1422,12 @@ static int __ddr_hwdfc_seq(struct clk_hw *hw, unsigned int level)
 			__raw_readl(DFC_AP(apmu_base)),
 			__raw_readl(DFC_CP(apmu_base)),
 			__raw_readl(DFC_STATUS(apmu_base)));
-		return -EAGAIN;
+		return -EBUSY;
+	}
+	if (unlikely(status.b.cfl != old_level)) {
+		pr_err("DDR level changed before AP HWDFC: expect LV %d, actual LV %d\n",
+		       old_level, status.b.cfl);
+		return -EBUSY;
 	}
 	/* Check if AP ISR is set, if set, clear it */
 	prefc_check_isr(apmu_base);
@@ -1413,11 +1440,12 @@ static int __ddr_hwdfc_seq(struct clk_hw *hw, unsigned int level)
 	wait_for_fc_done(DDR_FC, 0, apmu_base);
 	max_delay = 100;
 	status.v = __raw_readl(DFC_STATUS(apmu_base));
-	while ((max_delay > 0) && unlikely(status.b.cfl < level)) {
+	while (max_delay-- > 0 &&
+	       unlikely(status.b.dfc_status || status.b.cfl != level)) {
 		udelay(1);
-	status.v = __raw_readl(DFC_STATUS(apmu_base));
+		status.v = __raw_readl(DFC_STATUS(apmu_base));
 	}
-	if (unlikely(max_delay <= 0)) {
+	if (unlikely(status.b.dfc_status || status.b.cfl != level)) {
 		WARN(1, "HW-DFC failed! expect LV %d, actual LV %d\n",
 		     level, status.b.cfl);
 		pr_err("DFCAP %x, DFCCP %x, DFCSTATUS %x, PLLSEL %x, DMCCAP %x\n",
@@ -1427,6 +1455,7 @@ static int __ddr_hwdfc_seq(struct clk_hw *hw, unsigned int level)
 			__raw_readl(APMU_PLL_SEL_STATUS(apmu_base)),
 			__raw_readl(APMU_CCSR(apmu_base)));
 		clr_aprd_status(apmu_base);
+		return status.b.cfl == old_level ? -EAGAIN : -ETIMEDOUT;
 	}
 	return 0;
 }
@@ -1437,40 +1466,132 @@ static int ddr_hwdfc_seq(struct clk_hw *hw, struct ddr_opt *cop,
 	int ret = 0;
 
 	trace_pxa_ddr_clk_chg(CLK_CHG_ENTRY, cop->dclk, top->dclk);
-	ret = __ddr_hwdfc_seq(hw, top->ddr_freq_level);
+	ret = __ddr_hwdfc_seq(hw, cop->ddr_freq_level,
+				  top->ddr_freq_level);
 	trace_pxa_ddr_clk_chg(CLK_CHG_EXIT, cop->dclk, top->dclk);
 	return ret;
 }
 
+static struct ddr_opt *ddr_level2op(struct clk_ddr *ddr,
+				    unsigned int level)
+{
+	struct ddr_opt *ddr_opt = ddr->params->ddr_opt;
+	unsigned int i;
+
+	for (i = 0; i < ddr->params->ddr_opt_size; i++)
+		if (ddr_opt[i].ddr_freq_level == level)
+			return &ddr_opt[i];
+
+	return NULL;
+}
+
+static int prepare_hwdfc_parents(struct clk_ddr *ddr, struct ddr_opt *old,
+				 struct clk **parents, unsigned int *count,
+				 unsigned int capacity)
+{
+	struct ddr_opt *ddr_opt = ddr->params->ddr_opt;
+	unsigned int initial_count = *count;
+	unsigned int i, j;
+	int ret;
+
+	for (i = 0; i < ddr->params->ddr_opt_size; i++) {
+		if (ddr_opt[i].ddr_parent == old->ddr_parent)
+			continue;
+
+		for (j = 0; j < *count; j++)
+			if (parents[j] == ddr_opt[i].ddr_parent)
+				break;
+		if (j != *count)
+			continue;
+		if (*count == capacity) {
+			ret = -E2BIG;
+			goto err_disable;
+		}
+
+		ret = clk_prepare_enable(ddr_opt[i].ddr_parent);
+		if (ret)
+			goto err_disable;
+		parents[(*count)++] = ddr_opt[i].ddr_parent;
+	}
+
+	return 0;
+
+err_disable:
+	while (*count > initial_count)
+		clk_disable_unprepare(parents[--(*count)]);
+	return ret;
+}
+
+static void retain_hwdfc_parent(struct ddr_opt *old, struct ddr_opt *actual,
+				struct clk **parents, unsigned int count)
+{
+	unsigned int i;
+
+	for (i = 0; i < count; i++)
+		if (parents[i] != actual->ddr_parent)
+			clk_disable_unprepare(parents[i]);
+
+	if (actual->ddr_parent != old->ddr_parent)
+		clk_disable_unprepare(old->ddr_parent);
+}
+
 static int set_hwdfc_freq(struct clk_hw *hw, struct ddr_opt *old,
-			  struct ddr_opt *new)
+			  struct ddr_opt *new, struct ddr_opt **actual)
 {
 	unsigned long flags;
-	int ret = 0;
+	int max_delay, ret = 0;
 	struct clk_ddr *ddr = to_clk_ddr(hw);
+	struct ddr_opt *observed = NULL;
+	struct clk *parents[MAX_OP_NUM];
+	unsigned int parent_count;
+	union dfc_status status;
+
+	*actual = old;
+	parent_count = hwdfc_retained_parent_count;
+	memcpy(parents, hwdfc_retained_parents,
+	       parent_count * sizeof(parents[0]));
 
 	pr_debug("DDR set_freq start: old %u, new %u\n",
 		old->dclk, new->dclk);
 
-	ret = clk_prepare_enable(new->ddr_parent);
+	ret = prepare_hwdfc_parents(ddr, old, parents, &parent_count,
+				    ARRAY_SIZE(parents));
 	if (ret)
 		goto out;
-	spin_lock(ddr->lock);
-	local_irq_save(flags);
+	hwdfc_retained_parent_count = 0;
+	*actual = NULL;
+	spin_lock_irqsave(ddr->lock, flags);
 	ret = ddr_hwdfc_seq(hw, old, new);
-	if (unlikely(ret == -EAGAIN)) {
-		/* still stay at old freq and src */
-		local_irq_restore(flags);
-		spin_unlock(ddr->lock);
-		clk_disable_unprepare(new->ddr_parent);
+	if (ret) {
+		max_delay = 100;
+		status.v = __raw_readl(DFC_STATUS(ddr->params->apmu_base));
+		while (max_delay-- > 0 && status.b.dfc_status) {
+			udelay(10);
+			status.v = __raw_readl(DFC_STATUS(ddr->params->apmu_base));
+		}
+		if (status.b.dfc_status)
+			goto unlock;
+		observed = ddr_level2op(ddr, status.b.cfl);
+	} else {
+		observed = new;
+	}
+unlock:
+	spin_unlock_irqrestore(ddr->lock, flags);
+	if (!observed) {
+		pr_err("Unable to reconcile DDR HWDFC state; retaining parents\n");
+		memcpy(hwdfc_retained_parents, parents,
+		       parent_count * sizeof(parents[0]));
+		hwdfc_retained_parent_count = parent_count;
 		goto out;
 	}
-	local_irq_restore(flags);
-	spin_unlock(ddr->lock);
-	clk_disable_unprepare(old->ddr_parent);
 
-	pr_debug("DDR set_freq end: old %u, new %u\n",
-		old->dclk, new->dclk);
+	*actual = observed;
+	retain_hwdfc_parent(old, observed, parents, parent_count);
+	if (ret && observed == new)
+		ret = 0;
+
+	pr_debug("DDR set_freq end: old %u, requested %u, actual %u\n",
+		 old->dclk, new->dclk, observed->dclk);
 out:
 	return ret;
 }
@@ -1721,7 +1842,7 @@ static void ddr_lpm_tbl_optimize(struct clk_ddr *ddr,
 static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 				unsigned long parent_rate)
 {
-	struct ddr_opt *md_new, *md_old;
+	struct ddr_opt *md_actual, *md_new, *md_old;
 	unsigned int index;
 	struct ddr_opt *ddr_opt;
 	struct clk_ddr *ddr = to_clk_ddr(hw);
@@ -1732,14 +1853,15 @@ static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 	index = ddr_rate2_op_index(hw, rate);
 
 	md_new = &ddr_opt[index];
-	if (md_new == cur_ddr_op)
+	if (md_new == cur_ddr_op && !hwdfc_retained_parent_count)
 		return 0;
 
 	mutex_lock(&ddraxi_freqs_mutex);
 	md_old = cur_ddr_op;
 
+	md_actual = md_old;
 	if (ddr->flags & MMP_DDR_HWDFC_FEAT)
-		ret = set_hwdfc_freq(hw, md_old, md_new);
+		ret = set_hwdfc_freq(hw, md_old, md_new, &md_actual);
 	else {
 		ret = set_ddr_freq(hw, md_old, md_new);
 		if ((ddr->flags & MMP_DDR_DLL_BYPASS) && !ret)
@@ -1747,6 +1869,10 @@ static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 				md_old->dclk, md_new->dclk);
 	}
 	if (ret) {
+		if (md_actual) {
+			cur_ddr_op = md_actual;
+			__clk_reparent(hw->clk, md_actual->ddr_parent);
+		}
 		mutex_unlock(&ddraxi_freqs_mutex);
 		goto out;
 	}
@@ -1759,9 +1885,11 @@ static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 		mutex_lock(&ddraxi_freqs_mutex);
 		if (cur_ddr_op != md_new)
 			rollback_ret = -EAGAIN;
-		else if (ddr->flags & MMP_DDR_HWDFC_FEAT)
-			rollback_ret = set_hwdfc_freq(hw, md_new, md_old);
-		else
+		else if (ddr->flags & MMP_DDR_HWDFC_FEAT) {
+			md_actual = md_new;
+			rollback_ret = set_hwdfc_freq(hw, md_new, md_old,
+						      &md_actual);
+		} else
 			rollback_ret = set_ddr_freq(hw, md_new, md_old);
 		if (!rollback_ret) {
 			cur_ddr_op = md_old;
@@ -1769,7 +1897,10 @@ static int clk_ddr_setrate(struct clk_hw *hw, unsigned long rate,
 				ddr_lpm_tbl_optimize(ddr,
 					md_new->dclk, md_old->dclk);
 		}
-		else if (cur_ddr_op)
+		else if ((ddr->flags & MMP_DDR_HWDFC_FEAT) && md_actual) {
+			cur_ddr_op = md_actual;
+			__clk_reparent(hw->clk, md_actual->ddr_parent);
+		} else if (!(ddr->flags & MMP_DDR_HWDFC_FEAT) && cur_ddr_op)
 			__clk_reparent(hw->clk, cur_ddr_op->ddr_parent);
 		mutex_unlock(&ddraxi_freqs_mutex);
 
@@ -1796,10 +1927,14 @@ static unsigned long clk_ddr_recalc_rate(struct clk_hw *hw,
 	struct clk_ddr *ddr = to_clk_ddr(hw);
 	void __iomem *apmu_base = ddr->params->apmu_base;
 	union dfc_status dfc_status;
-	struct ddr_opt *ddr_opt = ddr->params->ddr_opt;
+	struct ddr_opt *ddr_opt;
 	if (ddr->flags & MMP_DDR_HWDFC_FEAT) {
 		dfc_status.v = __raw_readl(DFC_STATUS(apmu_base));
-		return ddr_opt[dfc_status.b.cfl].dclk * MHZ;
+		ddr_opt = ddr_level2op(ddr, dfc_status.b.cfl);
+		if (ddr_opt)
+			return ddr_opt->dclk * MHZ;
+		pr_err("Invalid DDR HWDFC level: %u\n", dfc_status.b.cfl);
+		return cur_ddr_op ? cur_ddr_op->dclk * MHZ : 0;
 	} else if (cur_ddr_op)
 		return cur_ddr_op->dclk * MHZ;
 	else

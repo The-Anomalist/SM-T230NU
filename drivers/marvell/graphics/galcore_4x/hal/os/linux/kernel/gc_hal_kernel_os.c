@@ -12643,8 +12643,16 @@ gckOS_ModifyPulseEaterPollingPeriod(
 
     hardware = Os->device->kernels[core]->hardware;
 
+    if (!hardware->powerState || !hardware->clockState)
+    {
+        return gcvSTATUS_OK;
+    }
+
     gcmkVERIFY_OK(gckOS_AcquireMutex(Os, hardware->pulseEaterMutex, gcvINFINITE));
-    gckHARDWARE_ModifyPeriod(hardware, Freq);
+    if (hardware->powerState && hardware->clockState)
+    {
+        gckHARDWARE_ModifyPeriod(hardware, Freq);
+    }
     gcmkVERIFY_OK(gckOS_ReleaseMutex(Os, hardware->pulseEaterMutex));
 
     return gcvSTATUS_OK;
@@ -12985,4 +12993,3 @@ OnError:
     return status;
 }
 #endif
-

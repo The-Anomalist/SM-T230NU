@@ -259,7 +259,7 @@ static void gov_policy_gpubench(struct gpufreq_ondemand_info_s *ondemand_info)
     */
     if(cur_policy->cur == cur_policy->max &&
        load < ondem_tuners_ins->lowest_work_load &&
-       ondemand_info->down_skip++ < MAX_RETRY_FREQUENCY_DOWN)
+       ++ondemand_info->down_skip <= MAX_RETRY_FREQUENCY_DOWN)
            return;
 
     ondemand_info->down_skip = 0;

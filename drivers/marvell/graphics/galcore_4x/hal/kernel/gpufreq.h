@@ -278,7 +278,7 @@ struct _gc_qos {
         if(!policy)                                                            \
             return NOTIFY_BAD;                                                 \
                                                                                \
-        ret = __gpufreq_driver_target(policy, val, RELATION);                  \
+        ret = gpufreq_driver_target(policy, val, RELATION);                    \
         gpufreq_policy_put(policy);                                            \
         if(ret < 0)                                                            \
             return NOTIFY_BAD;                                                 \

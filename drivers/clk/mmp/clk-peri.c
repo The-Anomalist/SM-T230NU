@@ -499,10 +499,11 @@ static unsigned long periph_clk_recalc_rate(struct clk_hw *hw,
 static int periph_clk_setrate(struct clk_hw *hw, unsigned long rate,
 			unsigned long parent_rate)
 {
-	unsigned long old_rate;
-	unsigned int index = 0;
+	unsigned long old_comclk_rate = 0, old_rate;
+	unsigned int index = 0, old_index = 0;
+	int ret;
 	struct clk *new_fparent;
-	struct periph_clk_tbl *periph_pp = NULL;
+	struct periph_clk_tbl *old_pp = NULL, *periph_pp = NULL;
 	struct clk_peri *peri = to_clk_peri(hw);
 	u32 flags = peri->reg_info->flags;
 
@@ -512,9 +513,21 @@ static int periph_clk_setrate(struct clk_hw *hw, unsigned long rate,
 
 	periph_pp = __clk_periph_get_opptr(peri, rate, &index);
 	if (likely(periph_pp)) {
+		if (peri->params->comclk)
+			old_comclk_rate = clk_get_rate(peri->params->comclk);
+
+		/* A faster functional clock must not outrun its common bus clock. */
+		if (peri->params->comclk && periph_pp->comclk_rate &&
+		    old_rate < rate) {
+			ret = clk_set_rate(peri->params->comclk,
+					   periph_pp->comclk_rate);
+			if (ret)
+				return ret;
+		}
+
 		/* low -> high rtc/wtc adjust */
-		if (peri->reg_info->reg_rtcwtc && \
-			periph_pp->rtcwtc && (hw->clk->rate < rate))
+		if (peri->reg_info->reg_rtcwtc && periph_pp->rtcwtc &&
+		    old_rate < rate)
 			writel_relaxed(periph_pp->rtcwtc,
 					peri->reg_info->reg_rtcwtc);
 
@@ -527,16 +540,38 @@ static int periph_clk_setrate(struct clk_hw *hw, unsigned long rate,
 			__clk_set_mux_div(hw, new_fparent, periph_pp->src_val,
 					 (periph_pp->div_val + 1));
 
-		/* set combinded clk rate here */
-		if (peri->params->comclk && periph_pp->comclk_rate)
-			clk_set_rate(peri->params->comclk,
-					periph_pp->comclk_rate);
-
 		/* high->low rtc/wtc adjust */
 		if (peri->reg_info->reg_rtcwtc && \
 			periph_pp->rtcwtc && (hw->clk->rate > rate))
 			writel_relaxed(periph_pp->rtcwtc,
 					peri->reg_info->reg_rtcwtc);
+
+		if (peri->params->comclk && periph_pp->comclk_rate &&
+		    old_rate > rate) {
+			ret = clk_set_rate(peri->params->comclk,
+					   periph_pp->comclk_rate);
+			if (ret) {
+				int restore_ret;
+
+				restore_ret = clk_set_rate(peri->params->comclk,
+							   old_comclk_rate);
+				if (restore_ret)
+					return restore_ret;
+				old_pp = __clk_periph_get_opptr(peri, old_rate,
+							     &old_index);
+				if (old_pp) {
+					if (peri->reg_info->reg_rtcwtc &&
+					    old_pp->rtcwtc)
+						writel_relaxed(old_pp->rtcwtc,
+							peri->reg_info->reg_rtcwtc);
+					__clk_set_mux_div(hw, old_pp->parent,
+						old_pp->src_val,
+						(flags & CLK_DIVIDER_ONE_BASED) ?
+						old_pp->div_val : old_pp->div_val + 1);
+				}
+				return ret;
+			}
+		}
 		/* duty cycle stat here */
 		if (peri->params->dcstat_support)
 			clk_dcstat_event(hw->clk, CLK_RATE_CHANGE, index);
