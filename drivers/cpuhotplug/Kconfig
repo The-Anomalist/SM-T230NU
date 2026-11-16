@@ -12,6 +12,12 @@ config CPU_HOTPLUG_POL_STANDALONE
           Avg-load is calculated with both cpu frequency aspect
           and run queue status.
 
+config CPU_HOTPLUG_INTELLIPLUG
+        bool "Intelliplug 4.0 (experimental, PXA1088 port)"
+        help
+          Faux123 Intelliplug candidate for experimental compatibility testing.
+          Select ONLY after scheduler symbols and suspend compatibility are verified.
+
 config NO_HOTPLUG_POLICY
         bool "NO automatic CPU hotplug policy"
         help

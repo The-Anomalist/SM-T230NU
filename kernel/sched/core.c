@@ -8131,3 +8131,35 @@ void dump_cpu_task(int cpu)
 	pr_info("Task dump for CPU %d:\n", cpu);
 	sched_show_task(cpu_curr(cpu));
 }
+
+/* PXA1088 Intelli-Plug runnable-task compatibility. */
+#ifdef CONFIG_CPU_HOTPLUG_INTELLIPLUG
+unsigned long pxa_intelliplug_nr_running(void)
+{
+    unsigned long total = 0;
+    unsigned int cpu;
+
+    for_each_online_cpu(cpu)
+        total += ACCESS_ONCE(cpu_rq(cpu)->nr_running);
+
+    if (total > (ULONG_MAX >> FSHIFT))
+        return ULONG_MAX;
+
+    return total << FSHIFT;
+}
+
+unsigned long pxa_intelliplug_cpu_nr_running(unsigned int cpu)
+{
+    unsigned long running;
+
+    if (cpu >= nr_cpu_ids || !cpu_possible(cpu))
+        return 0;
+
+    running = ACCESS_ONCE(cpu_rq(cpu)->nr_running);
+
+    if (running > (ULONG_MAX >> FSHIFT))
+        return ULONG_MAX;
+
+    return running << FSHIFT;
+}
+#endif
