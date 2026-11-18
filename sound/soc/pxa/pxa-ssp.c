@@ -239,7 +239,9 @@ static int pxa_ssp_startup(struct snd_pcm_substream *substream,
 			usleep_range(1, 2);
 		}
 	
-		clk_prepare_enable(ssp->clk);
+		ret = clk_prepare_enable(ssp->clk);
+		if (ret)
+			return ret;
 		/*
 		 * Since gssp is used for hifi record, enable
 		 * gssp port when startup to eliminate noise.
@@ -1118,22 +1120,39 @@ static int asoc_ssp_probe(struct platform_device *pdev)
 
 	if (strcmp(platform_driver_name, "tdma_platform") == 0) {
 		ret = mmp_pcm_platform_register(&pdev->dev);
+		if (ret)
+			goto err_unregister_component;
 		/* add ssp_mfp sysfs entries */
 		ret = device_create_file(&pdev->dev, &dev_attr_ssp_mfp);
-		if (ret < 0)
+		if (ret < 0) {
 			dev_err(&pdev->dev,
 				"%s: failed to add ssp_mfp sysfs files: %d\n",
 				__func__, ret);
+			mmp_pcm_platform_unregister(&pdev->dev);
+			goto err_unregister_component;
+		}
 	} else if (strcmp(platform_driver_name, "pdma_platform") == 0) {
 		ret = pxa_pcm_platform_register(&pdev->dev);
+		if (ret)
+			goto err_unregister_component;
 		/* add gssp_mfp sysfs entries */
 		ret = device_create_file(&pdev->dev, &dev_attr_gssp_mfp);
-		if (ret < 0)
+		if (ret < 0) {
 			dev_err(&pdev->dev,
 				"%s: failed to add gssp_mfp sysfs files: %d\n",
 				__func__, ret);
+			pxa_pcm_platform_unregister(&pdev->dev);
+			goto err_unregister_component;
+		}
+	} else {
+		ret = -EINVAL;
+		goto err_unregister_component;
 	}
 
+	return 0;
+
+err_unregister_component:
+	snd_soc_unregister_component(&pdev->dev);
 	return ret;
 }
 
@@ -1155,8 +1174,9 @@ static int asoc_ssp_remove(struct platform_device *pdev)
 		mmp_pcm_platform_unregister(&pdev->dev);
 	} else if (strcmp(platform_driver_name, "pdma_platform") == 0) {
 		device_remove_file(&pdev->dev, &dev_attr_gssp_mfp);
-		snd_soc_unregister_component(&pdev->dev);
+		pxa_pcm_platform_unregister(&pdev->dev);
 	}
+	snd_soc_unregister_component(&pdev->dev);
 
 	return 0;
 }

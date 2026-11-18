@@ -1,0 +1,83 @@
+Singularity CPU governor for PXA1088 (3.10 vendor kernel)
+=======================================================
+
+Purpose
+-------
+A shared-clock governor for the four Cortex-A7 CPUs in degaswifi. Uses the
+busiest online CPU rather than the cluster average, so a serial UI task can
+request capacity. This is a new implementation, not measured proof of better
+battery life or frame pacing. Benchmark on the tablet against interactive.
+
+Policy
+------
+* 20 ms deferrable sampling on a freezable workqueue. HZ=100 means 10 ms
+  timer resolution; sampling is not synchronized to display frames.
+* Instant load rise, 3/4 previous + 1/4 new load on decay.
+* Requested kHz = current kHz * smoothed busiest-core load / target_load.
+* At 85% raw load request at least 624 MHz; at 95% request at least 125%
+  of current speed. Resolve upward to the driver's available OPP table.
+* Wait at least 60 ms after an upward request before reducing frequency.
+* Touchscreen reports request a 624 MHz floor for 60 ms, refreshed at most
+  once per 20 ms while reports continue. No work in the input spinlock
+  sleeps or calls the frequency driver. Set input_boost_us=0 to disable.
+* At minimum frequency and under 10% raw and smoothed load, sample at 100 ms.
+  Deferrable timers do not wake an idle CPU; touch can advance queued work.
+* I/O wait counts as idle. No polling thread per CPU, permanent wakelock,
+  CPU online/offline commands, voltage control, or new clock table.
+
+All targets obey the cpufreq policy bounds and the driver still applies
+PM QoS/thermal constraints. A governor request can therefore differ from
+hardware speed. status reports the last requested target and driver error,
+not guaranteed residency or measured power. Burst floors are also bounded
+by scaling_max_freq. Resume uses the driver's existing suspend handling;
+freezable work stops across system suspend. Screen-off while awake is still
+load controlled, with no artificial frequency cap on background work.
+
+Integration
+-----------
+Both degaswifi EUR and USA defconfigs select Singularity as the default and
+keep interactive, ondemand and other existing governors available. The
+standalone hotplug choice remains unchanged. IntelliPlug source is present
+in this branch but is not selected by these defconfigs. Avoid having two
+hotplug managers or a userspace service continually rewriting the governor.
+
+Sysfs under /sys/devices/system/cpu/cpu0/cpufreq/singularity/:
+  sampling_rate     20000 us  [10000, 100000]
+  target_load          80 %   [50, 95]
+  hispeed_freq     624000 kHz [1, 2000000]; resolved/clamped at runtime
+  hispeed_load         85 %   [50, 100]
+  down_rate_us      60000 us  [10000, 500000]
+  idle_rate_us     100000 us  [100000, 1000000]
+  input_boost_freq 624000 kHz [1, 2000000]; resolved/clamped at runtime
+  input_boost_us    60000 us  [0, 200000]; zero disables boost
+  status          read-only raw/smoothed load, target, last driver error
+
+These nodes are per policy. A hotplug move of the policy's owning CPU may
+move its cpufreq directory. Tunables survive START/STOP within a policy,
+but return to defaults when the governor is removed and selected again.
+Timing changes take effect on the next queued evaluation (input can advance
+it). hispeed_load and target_load are separate knobs, not an ordered pair.
+
+Validation before daily use
+---------------------------
+Build the actual ROM kernel/boot image using the existing device pipeline.
+After boot check scaling_governor: Android init or the power HAL can replace
+the compiled default. Select with adb root, then:
+  adb shell 'echo singularity > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+
+Fallback:
+  adb shell 'echo interactive > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
+
+Compare identical brightness, apps, thermal state and hotplug policy. Record
+scrolling frame stats, launch time, time_in_state, online CPUs and battery
+drain over repeated runs. Check idle, sustained load, charging, screen-off,
+suspend/resume, governor switching and policy min/max changes. Reducing a
+max limit must take effect during a touch boost. Restore limits afterward.
+Do not infer performance/efficiency gains from arithmetic or compile tests.
+
+Host arithmetic tests:
+  python3 tools/testing/singularity/test_governor.py
+Tests extract the actual pure arithmetic functions, compile them on the
+host with undefined-behavior sanitization, and check burst ramp, idle decay,
+load/headroom bounds and rounding against sparse and expanded OPP tables.
+They do not simulate kernel locking, hotplug, suspend or Android scheduling.

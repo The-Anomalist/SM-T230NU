@@ -1036,7 +1036,7 @@
 					compatible = "marvell,88pm805";
 					reg = <0x38>;
 					interrupt-parent = <&gpio>;
-					interrupts = <124 0x1>;
+		interrupts = <124 0x2>;
 					marvell,88pm805-irq-write-clear;
 					pinctrl-names = "default";
 					pinctrl-0 = <&codec_int>;						

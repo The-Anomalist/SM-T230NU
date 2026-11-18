@@ -156,7 +156,7 @@ static struct notifier_block dock_nb = {
 int pm800_headset_detect(struct snd_soc_jack *jack)
 {
 	if (!info)
-		return -EINVAL;
+		return -EPROBE_DEFER;
 
 	/* Store the configuration */
 	info->hs_jack = jack;
@@ -171,7 +171,7 @@ EXPORT_SYMBOL_GPL(pm800_headset_detect);
 int pm800_hook_detect(struct snd_soc_jack *jack)
 {
 	if (!info)
-		return -EINVAL;
+		return -EPROBE_DEFER;
 
 	/* Store the configuration */
 	info->hk_jack = jack;
@@ -1088,4 +1088,3 @@ module_platform_driver(pm800_headset_driver);
 MODULE_DESCRIPTION("Samsung Custom 88PM822 Headset driver");
 MODULE_AUTHOR("Youngki Park <ykp74@samsung.com>");
 MODULE_LICENSE("GPL");
-

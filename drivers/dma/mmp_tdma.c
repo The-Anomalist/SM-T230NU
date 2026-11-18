@@ -661,7 +661,7 @@ static int mmp_tdma_probe(struct platform_device *pdev)
 	pool = of_get_named_gen_pool(np, "asram", 0);
 	if (!pool) {
 		dev_err(&pdev->dev, "asram pool not available\n");
-		return -ENOMEM;
+		return -EPROBE_DEFER;
 	}
 
 	if (irq_num != chan_num) {

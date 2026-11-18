@@ -118,6 +118,14 @@ config CPU_FREQ_DEFAULT_GOV_INTERACTIVE
 	  loading your cpufreq low-level hardware driver, using the
 	  'interactive' governor for latency-sensitive workloads.
 
+config CPU_FREQ_DEFAULT_GOV_SINGULARITY
+	bool "singularity"
+	depends on ARM_PXA988_CPUFREQ && INPUT
+	select CPU_FREQ_GOV_SINGULARITY
+	select CPU_FREQ_GOV_PERFORMANCE
+	help
+	  Use the Singularity shared-policy governor by default.
+
 endchoice
 
 config CPU_FREQ_GOV_PERFORMANCE
@@ -216,6 +224,15 @@ config CPU_FREQ_GOV_CONSERVATIVE
 	  For details, take a look at linux/Documentation/cpu-freq.
 
 	  If in doubt, say N.
+
+config CPU_FREQ_GOV_SINGULARITY
+	tristate "'singularity' PXA1088 governor"
+	depends on ARM_PXA988_CPUFREQ && INPUT
+	select CPU_FREQ_TABLE
+	select CPU_FREQ_GOV_COMMON
+	help
+	  Shared-clock load governor with burst response, delayed downscaling
+	  and deferrable sampling. Leaves hotplug and voltage to their drivers.
 
 config GENERIC_CPUFREQ_CPU0
 	tristate "Generic CPU0 cpufreq driver"

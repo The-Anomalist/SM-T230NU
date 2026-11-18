@@ -85,7 +85,8 @@ static int pxa988_update_cpu_speed(unsigned long rate)
 		return 0;
 
 	policy = cpufreq_cpu_get(cpu);
-	BUG_ON(!policy);
+	if (!policy)
+		return -ENODEV;
 #ifdef CONFIG_CPU_FREQ_DEBUG
 	printk(KERN_DEBUG "cpufreq-pxa988: transition: %u --> %u\n",
 	       freqs.old, freqs.new);
@@ -98,6 +99,7 @@ static int pxa988_update_cpu_speed(unsigned long rate)
 		freqs.new = freqs.old;
 
 	cpufreq_notify_transition(policy, &freqs, CPUFREQ_POSTCHANGE);
+	cpufreq_cpu_put(policy);
 	return ret;
 }
 
@@ -208,7 +210,9 @@ static int pxa988_target(struct cpufreq_policy *policy,
 	target_freq = min(qos_max, target_freq);
 	if ((target_freq == policy->max) || (target_freq == qos_max))
 		relation = CPUFREQ_RELATION_H;
-	cpufreq_table_target(policy, freq_table, target_freq, relation, &idx);
+	ret = cpufreq_table_target(policy, freq_table, target_freq, relation, &idx);
+	if (ret)
+		goto out;
 	freq = freq_table[idx].frequency;
 	pr_debug("Qos_min:%d Qos_max:%d, Target:%d(KHZ)\n",
 		pm_qos_request(PM_QOS_CPUFREQ_MIN),

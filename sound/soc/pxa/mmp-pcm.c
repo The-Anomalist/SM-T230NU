@@ -175,7 +175,7 @@ static int mmp_pcm_preallocate_dma_buffer(struct snd_pcm_substream *substream,
 	/* Get sram pool from device tree or platform data */
 	gpool = of_get_named_gen_pool(np, "asram", 0);
 	if (!gpool)
-		return -ENOMEM;
+		return -EPROBE_DEFER;
 
 	buf->area = (unsigned char *)gen_pool_alloc(gpool, size);
 	if (!buf->area)

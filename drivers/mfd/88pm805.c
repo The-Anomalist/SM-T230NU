@@ -352,7 +352,7 @@ static int pm805_dt_init(struct device_node *np,
 			 struct pm80x_platform_data *pdata)
 {
 	pdata->irq_mode =
-		!of_property_read_bool(np, "marvell,88pm805-irq-write-clear");
+		of_property_read_bool(np, "marvell,88pm805-irq-write-clear");
 
 	return 0;
 }

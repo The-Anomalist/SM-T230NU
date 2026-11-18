@@ -574,16 +574,16 @@ static struct snd_soc_dai_driver pm805_dai[] = {
 			.channels_min	= 2,
 			.channels_max	= 2,
 			.rates		= SNDRV_PCM_RATE_8000_48000,
-			.formats	= SNDRV_PCM_FORMAT_S16_LE | \
-					  SNDRV_PCM_FORMAT_S18_3LE,
+			.formats	= SNDRV_PCM_FMTBIT_S16_LE | \
+					  SNDRV_PCM_FMTBIT_S18_3LE,
 		},
 		.capture = {
 			.stream_name	= "I2S Capture",
 			.channels_min	= 2,
 			.channels_max	= 2,
 			.rates		= SNDRV_PCM_RATE_8000_48000,
-			.formats	= SNDRV_PCM_FORMAT_S16_LE | \
-					  SNDRV_PCM_FORMAT_S18_3LE,
+			.formats	= SNDRV_PCM_FMTBIT_S16_LE | \
+					  SNDRV_PCM_FMTBIT_S18_3LE,
 		},
 		.ops	= &pm805_dai_ops,
 	}, {
@@ -595,20 +595,20 @@ static struct snd_soc_dai_driver pm805_dai[] = {
 			.channels_min	= 1,
 			.channels_max	= 2,
 			.rates		= SNDRV_PCM_RATE_8000_48000,
-			.formats	= SNDRV_PCM_FORMAT_S8|		\
-					  SNDRV_PCM_FORMAT_S16_LE |	\
-					  SNDRV_PCM_FORMAT_S20_3LE |	\
-					  SNDRV_PCM_FORMAT_S24,
+			.formats	= SNDRV_PCM_FMTBIT_S8 |		\
+					  SNDRV_PCM_FMTBIT_S16_LE |	\
+					  SNDRV_PCM_FMTBIT_S20_3LE |	\
+					  SNDRV_PCM_FMTBIT_S24_LE,
 		},
 		.capture = {
 			.stream_name	= "PCM Capture",
 			.channels_min	= 1,
 			.channels_max	= 2,
 			.rates		= SNDRV_PCM_RATE_8000_48000,
-			.formats	= SNDRV_PCM_FORMAT_S8|		\
-					  SNDRV_PCM_FORMAT_S16_LE |	\
-					  SNDRV_PCM_FORMAT_S20_3LE |	\
-					  SNDRV_PCM_FORMAT_S24,
+			.formats	= SNDRV_PCM_FMTBIT_S8 |		\
+					  SNDRV_PCM_FMTBIT_S16_LE |	\
+					  SNDRV_PCM_FMTBIT_S20_3LE |	\
+					  SNDRV_PCM_FMTBIT_S24_LE,
 		},
 		.ops	= &pm805_dai_ops,
 	}, {
@@ -620,10 +620,10 @@ static struct snd_soc_dai_driver pm805_dai[] = {
 			.channels_min	= 1,
 			.channels_max	= 2,
 			.rates		= SNDRV_PCM_RATE_8000_48000,
-			.formats	= SNDRV_PCM_FORMAT_S8|		\
-					  SNDRV_PCM_FORMAT_S16_LE |	\
-					  SNDRV_PCM_FORMAT_S20_3LE |	\
-					  SNDRV_PCM_FORMAT_S24 |	\
+			.formats	= SNDRV_PCM_FMTBIT_S8 |		\
+					  SNDRV_PCM_FMTBIT_S16_LE |	\
+					  SNDRV_PCM_FMTBIT_S20_3LE |	\
+					  SNDRV_PCM_FMTBIT_S24_LE |	\
 					  SNDRV_PCM_FMTBIT_S32_LE,
 		},
 		.capture = {
@@ -631,10 +631,10 @@ static struct snd_soc_dai_driver pm805_dai[] = {
 			.channels_min	= 1,
 			.channels_max	= 2,
 			.rates		= SNDRV_PCM_RATE_8000_48000,
-			.formats	= SNDRV_PCM_FORMAT_S8|		\
-					  SNDRV_PCM_FORMAT_S16_LE |	\
-					  SNDRV_PCM_FORMAT_S20_3LE |	\
-					  SNDRV_PCM_FORMAT_S24 |	\
+			.formats	= SNDRV_PCM_FMTBIT_S8 |		\
+					  SNDRV_PCM_FMTBIT_S16_LE |	\
+					  SNDRV_PCM_FMTBIT_S20_3LE |	\
+					  SNDRV_PCM_FMTBIT_S24_LE |	\
 					  SNDRV_PCM_FMTBIT_S32_LE,
 		},
 	},

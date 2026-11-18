@@ -121,15 +121,16 @@ static int pxa_88pm805_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	int ret;
 
 	if (ssp_master)
-		snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
+		ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
 			    SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBS_CFS);
 	else
-		snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
+		ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_I2S |
 			    SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_CBM_CFM);
 
-	return 0;
+	return ret;
 }
 
 static int pxa_88pm805_hifi_prepare(struct snd_pcm_substream *substream)
@@ -451,9 +452,11 @@ static int pxa_88pm805_probe(struct platform_device *pdev)
 	card->dev = &pdev->dev;
 
 	ret = snd_soc_register_card(card);
-	if (ret)
+	if (ret) {
 		dev_err(&pdev->dev, "snd_soc_register_card() failed: %d\n",
 			ret);
+		return ret;
+	}
 
 	/* add ssp_master sysfs entries */
 	ret = device_create_file(&pdev->dev, &dev_attr_ssp_master);
@@ -461,7 +464,7 @@ static int pxa_88pm805_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev,
 			"%s: failed to add ssp_master sysfs files: %d\n",
 			__func__, ret);
-		goto err;
+		goto err_unregister_card;
 	}
 
 	/* add gssp_master sysfs entries */
@@ -470,7 +473,7 @@ static int pxa_88pm805_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev,
 			"%s: failed to add gssp_master sysfs files: %d\n",
 			__func__, ret);
-		goto err;
+		goto err_remove_ssp_master;
 	}
 
 	/* add gssp_record sysfs entries */
@@ -479,10 +482,16 @@ static int pxa_88pm805_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev,
 			"%s: failed to add gssp_record sysfs files: %d\n",
 			__func__, ret);
-		goto err;
+		goto err_remove_gssp_master;
 	}
-	return ret;
-err:
+	platform_set_drvdata(pdev, card);
+	return 0;
+
+err_remove_gssp_master:
+	device_remove_file(&pdev->dev, &dev_attr_gssp_master);
+err_remove_ssp_master:
+	device_remove_file(&pdev->dev, &dev_attr_ssp_master);
+err_unregister_card:
 	snd_soc_unregister_card(card);
 	return ret;
 }
@@ -493,6 +502,7 @@ static int pxa_88pm805_remove(struct platform_device *pdev)
 
 	device_remove_file(&pdev->dev, &dev_attr_ssp_master);
 	device_remove_file(&pdev->dev, &dev_attr_gssp_master);
+	device_remove_file(&pdev->dev, &dev_attr_gssp_record);
 	snd_soc_unregister_card(card);
 
 	return 0;
