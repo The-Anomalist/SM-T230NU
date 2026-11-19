@@ -1349,6 +1349,56 @@ static int inode_doinit_with_dentry(struct inode *inode, struct dentry *opt_dent
 			goto out_unlock;
 		isec->sid = sid;
 		break;
+	case SECURITY_FS_USE_GENFS: {
+		/* DEGAS_GENFS_SYSFS_INODE_SID_V1 */
+		struct dentry *genfs_dentry;
+		char *genfs_buffer, *genfs_path;
+
+		/* Keep the existing /proc PID normalization unchanged. */
+		if (sbsec->flags & SE_SBPROC) {
+			isec->sid = sbsec->sid;
+			if (opt_dentry && !S_ISLNK(inode->i_mode)) {
+				isec->sclass = inode_mode_to_security_class(inode->i_mode);
+				rc = selinux_proc_get_sid(opt_dentry,
+							   isec->sclass, &sid);
+				if (rc)
+					goto out_unlock;
+				isec->sid = sid;
+			}
+			break;
+		}
+
+		/* A generic SID is only a fallback, never a substitute for
+		 * looking up a path-specific genfscon when one exists. */
+		isec->sid = sbsec->sid;
+		genfs_dentry = opt_dentry ? dget(opt_dentry) : d_find_alias(inode);
+		if (!genfs_dentry)
+			goto out_unlock; /* Retry when an alias becomes available. */
+
+		genfs_buffer = (char *)__get_free_page(GFP_NOFS);
+		if (!genfs_buffer) {
+			dput(genfs_dentry);
+			rc = -ENOMEM;
+			goto out_unlock;
+		}
+		genfs_path = dentry_path_raw(genfs_dentry, genfs_buffer, PAGE_SIZE);
+		if (IS_ERR(genfs_path)) {
+			rc = PTR_ERR(genfs_path);
+		} else {
+			isec->sclass = inode_mode_to_security_class(inode->i_mode);
+			rc = security_genfs_sid(inode->i_sb->s_type->name,
+						genfs_path, isec->sclass, &sid);
+			if (!rc)
+				isec->sid = sid;
+			else if (rc == -ENOENT)
+				rc = 0; /* Preserve superblock fallback. */
+		}
+		free_page((unsigned long)genfs_buffer);
+		dput(genfs_dentry);
+		if (rc)
+			goto out_unlock;
+		break;
+	}
 	case SECURITY_FS_USE_MNTPOINT:
 		isec->sid = sbsec->mntpoint_sid;
 		break;
